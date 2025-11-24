@@ -2,477 +2,189 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>SwayMed — Midpoint + Camera Height + Optional 3-Marker Homography</title>
+<title>SwayMed — Enhanced UI & Metrics</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;600;800&display=swap" rel="stylesheet">
 <style>
-  body{font-family:Inter, Arial, sans-serif;margin:0;padding:12px;background:#f6f8fb;color:#081426}
-  .container{max-width:720px;margin:0 auto}
-  .header{display:flex;justify-content:space-between;align-items:center;padding:10px;background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
-  .card{background:#fff;padding:12px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.04);margin-top:12px}
-  #videoArea{position:relative;border-radius:10px;overflow:hidden;background:#000;height:56vw;max-height:720px;display:flex;align-items:center;justify-content:center}
-  video{width:100%;height:100%;object-fit:contain;display:block}
-  #overlay{position:absolute;left:0;top:0}
-  .controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-  button{flex:1;padding:10px;border-radius:8px;border:0;background:#fff;box-shadow:0 1px 0 rgba(0,0,0,0.06);font-weight:600}
-  button.primary{background:#0b63d8;color:#fff}
-  .row{display:flex;gap:8px;align-items:center}
-  input[type="number"]{width:120px;padding:8px;border-radius:6px;border:1px solid #ddd}
-  select{padding:8px;border-radius:6px;border:1px solid #ddd}
-  #plot{width:100%;height:240px;border-radius:8px;background:#fff;margin-top:8px}
-  .metrics{white-space:pre-wrap;margin-top:8px;font-size:14px}
-  .small{font-size:13px;color:#666}
-  .refImg{width:100%;margin-top:8px;border-radius:6px;display:none}
+:root{--accent:#5b6cff;--muted:#6b7280}
+body{font-family:Inter, Arial, sans-serif;background:linear-gradient(180deg,#f7fbff,#eef6ff);margin:0;color:#042028}
+.header{display:flex;align-items:center;gap:16px;padding:18px 24px}
+.logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#7c4dff);display:flex;align-items:center;justify-content:center;color:white;font-weight:800;font-size:20px}
+.title h1{margin:0;font-size:20px} .title p{margin:0;color:var(--muted);font-size:13px}
+.container{max-width:980px;margin:14px auto;padding:12px}
+.grid{display:grid;grid-template-columns:360px 1fr;gap:12px}
+.card{background:#fff;padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(12,30,50,0.06)}
+.controls{display:flex;flex-direction:column;gap:8px}
+.row{display:flex;gap:8px;align-items:center}
+.btn{padding:10px 14px;border-radius:10px;border:0;font-weight:700;cursor:pointer}
+.primary{background:linear-gradient(90deg,var(--accent),#7c4dff);color:white}
+.ghost{background:transparent;border:1px solid #e6eefc;color:var(--muted)}
+.small{font-size:13px;color:var(--muted)}
+#videoArea{position:relative;border-radius:10px;overflow:hidden;background:#000;height:420px;display:flex;align-items:center;justify-content:center}
+video, #overlay{width:100%;height:100%;display:block;object-fit:cover}
+.metricsList{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.metric{background:#fbfdff;padding:10px;border-radius:8px;text-align:center}
+.metric h3{margin:0;font-size:18px;color:var(--accent)}
+.metric p{margin:0;color:var(--muted);font-size:13px}
+#plot{width:100%;height:320px;background:#fff;border-radius:8px;margin-top:8px}
+.plotToolbar{display:flex;gap:8px;align-items:center;margin-top:8px}
+.exportBtn{background:#111827;color:white;border-radius:8px;padding:8px 10px;border:0;cursor:pointer}
+.footerNote{font-size:12px;color:var(--muted);margin-top:8px}
+@media (max-width:900px){ .grid{grid-template-columns:1fr;} #videoArea{height:56vw} }
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="header card">
-    <div><strong>SwayMed</strong><div class="small">Midpoint baseline + free 2D tracking + optional homography</div></div>
-    <div class="small">Local browser app</div>
-  </div>
-
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <strong>Live camera</strong>
-      <div class="small">Tap video to manually set midpoint (optional)</div>
-    </div>
-
-    <div id="videoArea" class="">
-      <video id="video" autoplay playsinline muted></video>
-      <canvas id="overlay"></canvas>
-    </div>
-
-    <div class="controls">
-      <button id="startCam" class="primary">Start Camera</button>
-      <button id="stopCam">Stop</button>
-      <button id="detectMarkers">Auto-Calibrate (2 stickers)</button>
-      <button id="autoMid">Auto Set Midpoint</button>
-      <button id="detect3">Auto-Calibrate (3 markers) — Homography</button>
-      <button id="startRec" class="primary">Start</button>
-      <button id="stopRec">Stop</button>
-      <button id="exportCSV">Export CSV</button>
-    </div>
-
-    <div style="margin-top:10px" class="row">
-      <label class="small" style="align-self:center">Camera height (cm):</label>
-      <input id="camHeight" type="number" min="10" step="1" value="120"/>
-      <label class="small" style="align-self:center">Use homography:</label>
-      <select id="homographyMode"><option value="none">None (2-sticker)</option><option value="homography">3-marker homography</option></select>
-    </div>
-
-    <div class="small" style="margin-top:8px">
-      Instructions: Place two small coloured stickers ~30 cm apart on the floor (for scale). Optionally place a third sticker (triangular) for better homography-based floor mapping. Strap phone to chest/waist with rear camera facing floor. Start camera → calibrate → set midpoint → start → stop → export CSV.
-    </div>
-  </div>
-
-  <div class="card">
-    <strong>Spaghetti plot (X vs Y, cm) & metrics</strong>
-    <canvas id="plot"></canvas>
-    <div class="metrics" id="metrics">No data</div>
-  </div>
-
+<div class="header">
+  <div class="logo">S</div>
+  <div class="title"><h1>Precision Balance — SwayMed</h1><p>Smartphone camera postural sway assessment</p></div>
+  <div style="margin-left:auto;color:var(--muted);font-size:13px">System Ready</div>
 </div>
 
-<!-- OpenCV.js for tracking & homography -->
+<div class="container">
+  <div class="grid">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><strong>Live Camera</strong><div class="small">Rear camera, strap to chest/waist</div></div>
+        <div class="small">v1.0</div>
+      </div>
+      <div id="videoArea" style="margin-top:8px">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="controls" style="margin-top:10px">
+        <div class="row">
+          <button id="startCam" class="btn primary">Start Camera</button>
+          <button id="stopCam" class="btn ghost">Stop</button>
+        </div>
+        <div class="row">
+          <button id="detectMarkers" class="btn">Auto-Calibrate (2 stickers)</button>
+          <button id="detect3" class="btn">3-marker Homography</button>
+        </div>
+        <div class="row">
+          <button id="autoMid" class="btn">Auto Set Midpoint</button>
+          <button id="manualMid" class="btn">Manual Midpoint</button>
+        </div>
+        <div class="row">
+          <label class="small">Eyes:</label>
+          <select id="eyes" style="padding:8px;border-radius:8px;border:1px solid #e6eefc">
+            <option value="open">Open</option>
+            <option value="closed">Closed</option>
+          </select>
+          <label class="small">Duration:</label>
+          <select id="duration" style="padding:8px;border-radius:8px;border:1px solid #e6eefc">
+            <option value="30">30 s</option>
+            <option value="60">60 s</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="startRec" class="btn primary">Start Test</button>
+          <button id="stopRec" class="btn ghost">Stop</button>
+        </div>
+        <div class="row">
+          <button id="exportCSV" class="btn">Export CSV</button>
+          <button id="exportPlot" class="btn exportBtn">Export Plot Image</button>
+        </div>
+        <div class="small footerNote">Place two small coloured stickers ~30 cm apart on the floor. Optional third sticker for homography.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>Live Metrics</strong>
+        <div id="timer" class="small">Timer: --</div>
+      </div>
+
+      <div class="metricsList">
+        <div class="metric"><h3 id="totalSway">0.000</h3><p>Total sway (cm)</p></div>
+        <div class="metric"><h3 id="swayArea">0.000</h3><p>Sway area (cm²)</p></div>
+        <div class="metric"><h3 id="mlDist">0.000</h3><p>ML distance (cm)</p></div>
+        <div class="metric"><h3 id="apDist">0.000</h3><p>AP distance (cm)</p></div>
+      </div>
+
+      <div id="plotCard">
+        <strong>Spaghetti Plot</strong>
+        <div id="plot"></div>
+        <div class="plotToolbar">
+          <div class="small">X: ML (cm) — Right positive</div>
+          <div style="flex:1"></div>
+          <button id="clearPlot" class="btn">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script async src="https://docs.opencv.org/4.x/opencv.js" onload="console.log('OpenCV.js loaded')"></script>
-
 <script>
-/* SwayMed single-file app
-   - 2-sticker auto-calibration: px->cm using known 30 cm
-   - Auto midpoint baseline (initial midpoint set)
-   - After baseline, tracking point is free 2D (measured LK / template fallback)
-   - Camera height metadata recorded in CSV
-   - Optional 3-marker homography: maps image -> floor cm coordinates
-   - Spaghetti plot: offset from baseline (cm)
-   - CSV contains metadata header (camera height, homography used)
-*/
+// Enhanced SwayMed single-file app: UI, axes, timer, metrics, export plot image & CSV.
+const video=document.getElementById('video'), overlay=document.getElementById('overlay'), octx=overlay.getContext('2d');
+const plotDiv=document.getElementById('plot'); const totalSwayEl=document.getElementById('totalSway');
+const swayAreaEl=document.getElementById('swayArea'), mlDistEl=document.getElementById('mlDist'), apDistEl=document.getElementById('apDist');
+const timerEl=document.getElementById('timer');
+const startCamBtn=document.getElementById('startCam'), stopCamBtn=document.getElementById('stopCam');
+const detect2Btn=document.getElementById('detectMarkers'), detect3Btn=document.getElementById('detect3');
+const autoMidBtn=document.getElementById('autoMid'), manualMidBtn=document.getElementById('manualMid');
+const startRecBtn=document.getElementById('startRec'), stopRecBtn=document.getElementById('stopRec');
+const exportBtn=document.getElementById('exportCSV'), exportPlotBtn=document.getElementById('exportPlot');
+const clearPlotBtn=document.getElementById('clearPlot');
+const eyesSel=document.getElementById('eyes'), durationSel=document.getElementById('duration');
 
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const octx = overlay.getContext('2d');
-const plot = document.getElementById('plot'); const pctx = plot.getContext('2d');
-const metricsEl = document.getElementById('metrics');
-const startCamBtn = document.getElementById('startCam');
-const stopCamBtn = document.getElementById('stopCam');
-const detect2Btn = document.getElementById('detectMarkers');
-const detect3Btn = document.getElementById('detect3');
-const autoMidBtn = document.getElementById('autoMid');
-const startRecBtn = document.getElementById('startRec');
-const stopRecBtn = document.getElementById('stopRec');
-const exportBtn = document.getElementById('exportCSV');
-const camHeightInput = document.getElementById('camHeight');
-const homMode = document.getElementById('homographyMode');
+let stream=null, videoReady=false; let markers=[], pixelsPerCm=null, thirdMarker=null;
+let baselineMid=null, useHomography=false, H=null; let prevGray=null, prevPts=null, template=null;
+let trackingInited=false, measuring=false, data=[], lastProcess=0, lastTracked=null;
 
-let stream=null, videoReady=false;
-let markers=[], pixelsPerCm=null, thirdMarker=null;
-let baselineMid=null; // {x,y,unit:'px'|'cm'}
-let useHomography=false, H=null; // H: cv.Mat homography (image->world cm)
-let prevGray=null, prevPts=null, template=null;
-let trackingInited=false, measuring=false;
-let data=[]; let lastProcess=0;
+// plot canvas
+const plotCanvas=document.createElement('canvas'); plotCanvas.width=680; plotCanvas.height=320; plotDiv.appendChild(plotCanvas); const pctx=plotCanvas.getContext('2d');
 
-function setStatus(s){ metricsEl.innerText = s; }
-function ensureOverlaySize(){
-  overlay.width = video.videoWidth || video.clientWidth || 640;
-  overlay.height = video.videoHeight || video.clientHeight || 480;
-  plot.width = Math.min(overlay.width, 680);
-  plot.height = 240;
-}
+function setStatus(s){ timerEl.innerText = s; }
+function ensureOverlaySize(){ overlay.width = video.videoWidth || video.clientWidth || 640; overlay.height = video.videoHeight || video.clientHeight || 480; plotCanvas.width = Math.min(800, Math.max(400, overlay.width)); plotCanvas.height = 320; }
 
-async function startCamera(){
-  try{
-    setStatus('Requesting camera...');
-    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}, audio:false});
-    video.srcObject = stream;
-    await video.play();
-    await new Promise(res=>{
-      if (video.videoWidth && video.videoHeight) return res();
-      const h=()=>{ video.removeEventListener('loadedmetadata', h); res(); };
-      video.addEventListener('loadedmetadata', h);
-      setTimeout(res, 1500);
-    });
-    ensureOverlaySize();
-    videoReady = true;
-    setStatus('Camera started: ' + overlay.width + 'x' + overlay.height);
-    requestAnimationFrame(loop);
-  }catch(err){ console.error(err); alert('Camera error: ' + err.message); setStatus('camera error'); }
-}
-function stopCamera(){
-  if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; video.pause(); video.srcObject=null; videoReady=false; setStatus('camera stopped'); }
-}
+startCamBtn.onclick = async ()=>{ try{ setStatus('Requesting camera...'); stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}, audio:false}); video.srcObject = stream; await video.play(); await new Promise(res=>{ if (video.videoWidth && video.videoHeight) return res(); const h=()=>{video.removeEventListener('loadedmetadata',h); res()}; video.addEventListener('loadedmetadata',h); setTimeout(res,1500); }); ensureOverlaySize(); videoReady=true; setStatus('Camera started'); requestAnimationFrame(loop); }catch(e){ alert('Camera error: '+e.message);} };
+stopCamBtn.onclick = ()=>{ if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; video.pause(); video.srcObject=null; videoReady=false; setStatus('camera stopped'); } };
 
-/* Small capture helper */
-async function captureSmall(pw=480){
-  const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
-  const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-  const tctx = tmp.getContext('2d'); tctx.drawImage(video, 0, 0, pw, ph);
-  return tctx.getImageData(0,0,pw,ph);
-}
+async function captureSmall(pw=480){ const ph=Math.max(80, Math.round(pw*(video.videoHeight/video.videoWidth||0.75))); const tmp=document.createElement('canvas'); tmp.width=pw; tmp.height=ph; const tctx=tmp.getContext('2d'); tctx.drawImage(video,0,0,pw,ph); return tctx.getImageData(0,0,pw,ph); }
 
-/* Simple color-blob detection (saturation + max color) tuned for small bright stickers */
-async function detectBlobs(limit=5){
-  const imgd = await captureSmall(480);
-  const pw = imgd.width, ph = imgd.height;
-  const d = imgd.data;
-  const mask = new Uint8Array(pw*ph);
-  for (let i=0,j=0;i<d.length;i+=4,j++){
-    const r=d[i], g=d[i+1], b=d[i+2];
-    const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
-    const sat = mx===0?0:(mx-mn)/mx;
-    mask[j] = (sat>0.35 && mx>90)?1:0;
-  }
-  const visited = new Uint8Array(pw*ph);
-  const blobs = [];
-  for (let y=0;y<ph;y++){
-    for (let x=0;x<pw;x++){
-      const idx = y*pw + x;
-      if (mask[idx] && !visited[idx]){
-        let stack=[idx], sumx=0,sumy=0,c=0; visited[idx]=1;
-        while(stack.length){
-          const cur = stack.pop();
-          const cx = cur % pw, cy = Math.floor(cur/pw);
-          sumx+=cx; sumy+=cy; c++;
-          const neigh = [cur-1,cur+1,cur-pw,cur+pw];
-          for (const n of neigh) if (n>=0 && n<pw*ph && mask[n] && !visited[n]){ visited[n]=1; stack.push(n); }
-        }
-        if (c > 30 && c < 3000) blobs.push({cx: sumx/c, cy: sumy/c, c});
-      }
-    }
-  }
-  blobs.sort((a,b)=>{ const cx=pw/2, cy=ph/2; return Math.hypot(a.cx-cx,a.cy-cy) - Math.hypot(b.cx-cx,b.cy-cy); });
-  return {blobs, pw, ph};
-}
+async function detectBlobs(limit=6){ const imgd=await captureSmall(480); const pw=imgd.width, ph=imgd.height; const d=imgd.data; const mask=new Uint8Array(pw*ph); for (let i=0,j=0;i<d.length;i+=4,j++){ const r=d[i], g=d[i+1], b=d[i+2]; const mx=Math.max(r,g,b), mn=Math.min(r,g,b); const sat = mx===0?0:(mx-mn)/mx; mask[j] = (sat>0.35 && mx>90)?1:0; } const visited=new Uint8Array(pw*ph); const blobs=[]; for (let y=0;y<ph;y++){ for (let x=0;x<pw;x++){ const idx=y*pw+x; if (mask[idx] && !visited[idx]){ let stack=[idx], sumx=0,sumy=0,c=0; visited[idx]=1; while(stack.length){ const cur=stack.pop(); const cx=cur%pw, cy=Math.floor(cur/pw); sumx+=cx; sumy+=cy; c++; const n=[cur-1,cur+1,cur-pw,cur+pw]; for (const nn of n) if (nn>=0 && nn<pw*ph && mask[nn] && !visited[nn]){ visited[nn]=1; stack.push(nn); } } if (c>30 && c<3000) blobs.push({cx:sumx/c, cy:sumy/c, c}); } } } blobs.sort((a,b)=>{ const cx=pw/2, cy=ph/2; return Math.hypot(a.cx-cx,a.cy-cy)-Math.hypot(b.cx-cx,b.cy-cy); }); return {blobs,pw,ph}; }
 
-/* 2-marker calibration */
-async function detect2Markers(){
-  if (!videoReady){ alert('Start camera first'); return; }
-  try{
-    const res = await detectBlobs();
-    const blobs = res.blobs;
-    if (blobs.length < 2){ alert('Found ' + blobs.length + ' sticker(s). Need at least 2.'); markers=[]; return; }
-    const b1 = blobs[0], b2 = blobs[1];
-    const sx = overlay.width / res.pw, sy = overlay.height / res.ph;
-    markers = [{x: b1.cx * sx, y: b1.cy * sy}, {x: b2.cx * sx, y: b2.cy * sy}];
-    pixelsPerCm = Math.hypot(markers[0].x - markers[1].x, markers[0].y - markers[1].y) / 30.0;
-    setStatus('2-marker calibration OK. px/cm=' + pixelsPerCm.toFixed(3));
-    alert('2-marker calibration OK: red markers shown.');
-  }catch(e){ console.error(e); alert('2-marker detect error: ' + e); setStatus('marker error'); }
-}
+detect2Btn.onclick = async ()=>{ if (!videoReady){ alert('Start camera'); return; } const res = await detectBlobs(); const blobs = res.blobs; if (blobs.length<2){ alert('Found '+blobs.length+' stickers. Need >=2'); markers=[]; return; } const b1=blobs[0], b2=blobs[1]; const sx=overlay.width/res.pw, sy=overlay.height/res.ph; markers=[{x:b1.cx*sx,y:b1.cy*sy},{x:b2.cx*sx,y:b2.cy*sy}]; pixelsPerCm = Math.hypot(markers[0].x-markers[1].x, markers[0].y-markers[1].y)/30.0; setStatus('2-marker calibration OK'); alert('2-marker calibration OK'); };
 
-/* 3-marker calibration -> compute homography mapping image->world cm.
-   We assume user placed markers to form approx right triangle:
-   world points used: (0,0), (30,0), (0,30) cm (user instruction to place approx triangle).
-   This is optional and more accurate when used properly.
-*/
-async function detect3Markers(){
-  if (!videoReady){ alert('Start camera first'); return; }
-  if (typeof cv === 'undefined'){ alert('OpenCV.js required for 3-marker calibration'); return; }
-  try{
-    const res = await detectBlobs(6);
-    const blobs = res.blobs;
-    if (blobs.length < 3){ alert('Found ' + blobs.length + ' marker(s). Need >=3 for homography.'); return; }
-    const b1=blobs[0], b2=blobs[1], b3=blobs[2];
-    const sx = overlay.width / res.pw, sy = overlay.height / res.ph;
-    const p1 = {x: b1.cx * sx, y: b1.cy * sy};
-    const p2 = {x: b2.cx * sx, y: b2.cy * sy};
-    const p3 = {x: b3.cx * sx, y: b3.cy * sy};
-    // world points in cm (user must place approx triangle of size ~30cm)
-    const src = cv.matFromArray(3,1,cv.CV_32FC2, [p1.x, p1.y, p2.x, p2.y, p3.x, p3.y]);
-    const dst = cv.matFromArray(3,1,cv.CV_32FC2, [0,0, 30,0, 0,30]);
-    const Hmat = cv.findHomography(src, dst);
-    if (!Hmat || Hmat.empty()){ alert('Homography computation failed'); src.delete(); dst.delete(); return; }
-    // store
-    H = Hmat; useHomography = true;
-    markers = [p1, p2]; thirdMarker = p3;
-    setStatus('3-marker homography computed. Homography active.');
-    alert('3-marker calibration OK. Homography active.');
-    src.delete(); dst.delete();
-  }catch(e){ console.error('3-marker error', e); alert('3-marker error: ' + e); setStatus('homography error'); }
-}
+detect3Btn.onclick = async ()=>{ if (!videoReady){ alert('Start camera'); return; } if (typeof cv === 'undefined'){ alert('OpenCV.js required'); return; } const res=await detectBlobs(6); const blobs=res.blobs; if (blobs.length<3){ alert('Found '+blobs.length+' stickers. Need >=3'); return; } const b1=blobs[0], b2=blobs[1], b3=blobs[2]; const sx=overlay.width/res.pw, sy=overlay.height/res.ph; const p1={x:b1.cx*sx,y:b1.cy*sy}, p2={x:b2.cx*sx,y:b2.cy*sy}, p3={x:b3.cx*sx,y:b3.cy*sy}; const src=cv.matFromArray(3,1,cv.CV_32FC2,[p1.x,p1.y,p2.x,p2.y,p3.x,p3.y]); const dst=cv.matFromArray(3,1,cv.CV_32FC2,[0,0,30,0,0,30]); const Hmat=cv.findHomography(src,dst); if (!Hmat||Hmat.empty()){ alert('Homography failed'); src.delete(); dst.delete(); return; } H=Hmat; useHomography=true; markers=[p1,p2]; thirdMarker=p3; setStatus('3-marker homography OK'); alert('3-marker calibration OK'); src.delete(); dst.delete(); };
 
-/* auto set midpoint baseline: midpoint of first two markers
-   If homography active, compute midpoint in world cm using H; else keep px baseline
-*/
-function autoSetMidpoint(){
-  if (markers.length < 2){ alert('Calibrate with at least 2 markers first'); return; }
-  const mx = (markers[0].x + markers[1].x) / 2;
-  const my = (markers[0].y + markers[1].y) / 2;
-  if (useHomography && H){
-    try{
-      const src = cv.matFromArray(1,1,cv.CV_32FC2, [mx, my]);
-      const dst = new cv.Mat();
-      cv.perspectiveTransform(src, dst, H);
-      baselineMid = {x: dst.data32F[0], y: dst.data32F[1], unit: 'cm'};
-      src.delete(); dst.delete();
-      setStatus('Baseline midpoint set in world cm: ' + baselineMid.x.toFixed(2) + ',' + baselineMid.y.toFixed(2));
-    }catch(e){ console.error(e); alert('Error mapping midpoint to world: ' + e); }
-  } else {
-    baselineMid = {x: mx, y: my, unit: 'px'};
-    setStatus('Baseline midpoint set in image px: ' + Math.round(mx) + ',' + Math.round(my));
-  }
-  initTracking({x: mx, y: my});
-  alert('Baseline midpoint set. Tracking initialized at midpoint.');
-}
+autoMidBtn.onclick = ()=>{ if (markers.length<2){ alert('Calibrate first'); return; } const mx=(markers[0].x+markers[1].x)/2, my=(markers[0].y+markers[1].y)/2; if (useHomography&&H){ try{ const src=cv.matFromArray(1,1,cv.CV_32FC2,[mx,my]); const dst=new cv.Mat(); cv.perspectiveTransform(src,dst,H); baselineMid={x:dst.data32F[0],y:dst.data32F[1],unit:'cm'}; src.delete(); dst.delete(); }catch(e){ console.warn(e); } } else { baselineMid={x:mx,y:my,unit:'px'}; } initTracking({x:mx,y:my}); alert('Baseline midpoint set'); };
 
-/* init tracking: create prevGray & prevPts using OpenCV.js */
-function initTracking(pt){
-  if (typeof cv === 'undefined'){ alert('OpenCV.js required for tracking; page can still calibrate without it.'); trackingInited=false; return; }
-  const pw = 320;
-  const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
-  const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-  const tctx = tmp.getContext('2d'); tctx.drawImage(video, 0, 0, pw, ph);
-  const imgd = tctx.getImageData(0,0,pw,ph);
-  if (prevGray){ try{ prevGray.delete(); }catch(e){} prevGray=null; }
-  prevGray = cv.matFromImageData(imgd); cv.cvtColor(prevGray, prevGray, cv.COLOR_RGBA2GRAY);
-  if (prevPts){ try{ prevPts.delete(); }catch(e){} prevPts=null; }
-  const procX = Math.round(pt.x * (pw / overlay.width)); const procY = Math.round(pt.y * (ph / overlay.height));
-  prevPts = new cv.Mat(1,1,cv.CV_32FC2); prevPts.data32F[0]=procX; prevPts.data32F[1]=procY;
-  const tsize = 41; const rx = Math.max(0, procX - Math.floor(tsize/2)), ry = Math.max(0, procY - Math.floor(tsize/2));
-  const rw = Math.min(tsize, pw - rx), rh = Math.min(tsize, ph - ry);
-  if (template){ try{ template.delete(); }catch(e){} template=null; }
-  if (rw > 4 && rh > 4){
-    const src = cv.matFromImageData(imgd);
-    let g = new cv.Mat(); cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
-    template = g.roi(new cv.Rect(rx, ry, rw, rh)).clone();
-    g.delete(); src.delete();
-  }
-  trackingInited = true;
-  data = []; baseline = null;
-}
+manualMidBtn.onclick = ()=>{ alert('Tap video to set midpoint'); };
+overlay.addEventListener('click',(ev)=>{ if (!videoReady) return; const r=overlay.getBoundingClientRect(); const x=(ev.clientX-r.left)*(overlay.width/r.width); const y=(ev.clientY-r.top)*(overlay.height/r.height); if (useHomography&&H&&typeof cv!=='undefined'){ const src=cv.matFromArray(1,1,cv.CV_32FC2,[x,y]); const dst=new cv.Mat(); cv.perspectiveTransform(src,dst,H); baselineMid={x:dst.data32F[0],y:dst.data32F[1],unit:'cm'}; src.delete(); dst.delete(); alert('Manual baseline set (cm)'); } else { baselineMid={x:x,y:y,unit:'px'}; alert('Manual baseline set (px)'); } initTracking({x:x,y:y}); });
 
-/* main loop: draw video, markers, baseline mid, process frames */
-function loop(ts){
-  if (videoReady){
-    octx.clearRect(0,0,overlay.width,overlay.height);
-    octx.drawImage(video, 0, 0, overlay.width, overlay.height);
-    // draw markers and line
-    if (markers.length >= 2){
-      octx.strokeStyle = 'white'; octx.lineWidth = 2; octx.beginPath(); octx.moveTo(markers[0].x, markers[0].y); octx.lineTo(markers[1].x, markers[1].y); octx.stroke();
-      for (let i=0;i<markers.length;i++){ octx.fillStyle='red'; octx.beginPath(); octx.arc(markers[i].x, markers[i].y,8,0,Math.PI*2); octx.fill(); octx.fillStyle='white'; octx.fillText(i+1, markers[i].x+10, markers[i].y+6); }
-    }
-    if (thirdMarker){ octx.fillStyle='orange'; octx.beginPath(); octx.arc(thirdMarker.x, thirdMarker.y,7,0,Math.PI*2); octx.fill(); }
-    // show baseline midpoint (display coords)
-    if (baselineMid){
-      let dispX = baselineMid.x, dispY = baselineMid.y;
-      if (baselineMid.unit === 'cm' && H){
-        // map world cm back to image: inverse homography
-        try{
-          const invH = new cv.Mat();
-          cv.invert(H, invH, cv.DECOMP_SVD);
-          const src = cv.matFromArray(1,1,cv.CV_32FC2, [baselineMid.x, baselineMid.y]);
-          const dst = new cv.Mat();
-          cv.perspectiveTransform(src, dst, invH);
-          dispX = dst.data32F[0]; dispY = dst.data32F[1];
-          src.delete(); dst.delete(); invH.delete();
-        }catch(e){ console.warn('invH fail', e); }
-      }
-      octx.fillStyle='lime'; octx.beginPath(); octx.arc(dispX, dispY,10,0,Math.PI*2); octx.fill();
-    }
+function initTracking(pt){ if (typeof cv==='undefined'){ alert('OpenCV.js required'); trackingInited=false; return; } const pw=320, ph=Math.max(80, Math.round(pw*(video.videoHeight/video.videoWidth||0.75))); const tmp=document.createElement('canvas'); tmp.width=pw; tmp.height=ph; const tctx=tmp.getContext('2d'); tctx.drawImage(video,0,0,pw,ph); const imgd=tctx.getImageData(0,0,pw,ph); if (prevGray){ try{ prevGray.delete(); }catch(e){} prevGray=null; } prevGray = cv.matFromImageData(imgd); cv.cvtColor(prevGray, prevGray, cv.COLOR_RGBA2GRAY); if (prevPts){ try{ prevPts.delete(); }catch(e){} prevPts=null; } const procX=Math.round(pt.x*(pw/overlay.width)), procY=Math.round(pt.y*(ph/overlay.height)); prevPts=new cv.Mat(1,1,cv.CV_32FC2); prevPts.data32F[0]=procX; prevPts.data32F[1]=procY; const tsize=41; const rx=Math.max(0,procX-Math.floor(tsize/2)), ry=Math.max(0,procY-Math.floor(tsize/2)); const rw=Math.min(tsize,pw-rx), rh=Math.min(tsize,ph-ry); if (template){ try{ template.delete(); }catch(e){} template=null; } if (rw>4 && rh>4){ const src=cv.matFromImageData(imgd); let g=new cv.Mat(); cv.cvtColor(src,g,cv.COLOR_RGBA2GRAY); template=g.roi(new cv.Rect(rx,ry,rw,rh)).clone(); g.delete(); src.delete(); } trackingInited=true; data=[]; lastTracked=null; }
 
-    if (trackingInited && ts - lastProcess > 40){
-      lastProcess = ts;
-      processFrame();
-      if (measuring){ drawSpaghetti(); updateMetrics(); }
-    }
-  }
-  requestAnimationFrame(loop);
-}
+let lastTime=0;
+function loop(ts){ if (videoReady){ octx.clearRect(0,0,overlay.width,overlay.height); octx.drawImage(video,0,0,overlay.width,overlay.height); if (markers.length>=2){ octx.strokeStyle='white'; octx.lineWidth=2; octx.beginPath(); octx.moveTo(markers[0].x,markers[0].y); octx.lineTo(markers[1].x,markers[1].y); octx.stroke(); for (let i=0;i<markers.length;i++){ octx.fillStyle='red'; octx.beginPath(); octx.arc(markers[i].x,markers[i].y,10,0,Math.PI*2); octx.fill(); octx.fillStyle='white'; octx.font='14px Arial'; octx.fillText('M'+(i+1), markers[i].x+12, markers[i].y+6); } } if (thirdMarker){ octx.fillStyle='orange'; octx.beginPath(); octx.arc(thirdMarker.x, thirdMarker.y,9,0,Math.PI*2); octx.fill(); octx.fillStyle='white'; octx.fillText('M3', thirdMarker.x+10, thirdMarker.y+6); } if (baselineMid){ let dispX=baselineMid.x, dispY=baselineMid.y; if (baselineMid.unit==='cm' && H){ try{ const invH=new cv.Mat(); cv.invert(H,invH,cv.DECOMP_SVD); const src=cv.matFromArray(1,1,cv.CV_32FC2,[baselineMid.x,baselineMid.y]); const dst=new cv.Mat(); cv.perspectiveTransform(src,dst,invH); dispX=dst.data32F[0]; dispY=dst.data32F[1]; src.delete(); dst.delete(); invH.delete(); }catch(e){} } octx.fillStyle='lime'; octx.beginPath(); octx.arc(dispX,dispY,10,0,Math.PI*2); octx.fill(); } if (lastTracked){ octx.fillStyle='cyan'; octx.beginPath(); octx.arc(lastTracked.x,lastTracked.y,10,0,Math.PI*2); octx.fill(); octx.fillStyle='black'; octx.font='12px Arial'; octx.fillText('T', lastTracked.x+12, lastTracked.y+4); } if (trackingInited){ if (ts - lastProcess > 40){ lastProcess = ts; processFrame(); if (measuring && ts - lastTime > 200){ drawSpaghetti(); updateMetrics(); lastTime = ts; } } } } requestAnimationFrame(loop); }
 
-/* processFrame: LK optical flow on downscaled frame; fallback to template match if LK fails.
-   After obtaining measured image point (usedX, usedY), we:
-   - if homography active: map to world cm using H
-   - else: compute Xcm,Ycm relative to baselineMid using pixelsPerCm
-   - compute offset from baselineMid (in cm) and push to data[]
-*/
-function processFrame(){
-  if (!trackingInited) return;
-  if (typeof cv === 'undefined'){ return; }
-  const pw = 320, ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
-  createImageBitmap(video).then(bitmap=>{
-    const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-    const tctx = tmp.getContext('2d'); tctx.drawImage(bitmap, 0, 0, pw, ph); bitmap.close();
-    const imgd = tctx.getImageData(0,0,pw,ph);
-    let gray = cv.matFromImageData(imgd); cv.cvtColor(gray, gray, cv.COLOR_RGBA2GRAY);
-    let next = new cv.Mat(), status = new cv.Mat(), err = new cv.Mat();
-    try{ cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3); }catch(e){ console.warn('LK error', e); }
-    let usedX = null, usedY = null;
-    if (status && status.data[0] === 1){
-      const procX = next.data32F[0], procY = next.data32F[1];
-      usedX = procX * (overlay.width / pw);
-      usedY = procY * (overlay.height / ph);
-    } else if (template){
-      let src = cv.matFromImageData(imgd);
-      let g = new cv.Mat(); cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
-      let res = new cv.Mat(); cv.matchTemplate(g, template, res, cv.TM_CCOEFF_NORMED);
-      let mm = cv.minMaxLoc(res);
-      const procX = mm.maxLoc.x + template.cols/2, procY = mm.maxLoc.y + template.rows/2;
-      usedX = procX * (overlay.width / pw);
-      usedY = procY * (overlay.height / ph);
-      res.delete(); g.delete(); src.delete();
-    }
-    if (usedX !== null){
-      let Xcm, Ycm;
-      if (useHomography && H){
-        const src = cv.matFromArray(1,1,cv.CV_32FC2, [usedX, usedY]);
-        const dst = new cv.Mat();
-        cv.perspectiveTransform(src, dst, H);
-        Xcm = dst.data32F[0]; Ycm = dst.data32F[1];
-        src.delete(); dst.delete();
-      } else {
-        if (!pixelsPerCm){ console.warn('pixelsPerCm undefined'); return; }
-        // offsets relative to baseline midpoint in pixels
-        const baseX = baselineMid ? baselineMid.x : 0;
-        const baseY = baselineMid ? baselineMid.y : 0;
-        const dx_px = usedX - baseX;
-        const dy_px = usedY - baseY;
-        Xcm = dx_px / pixelsPerCm;
-        Ycm = dy_px / pixelsPerCm;
-      }
-      const time_s = performance.now()/1000.0;
-      const sway = Math.hypot(Xcm, Ycm);
-      data.push({t: time_s, raw_px_x: usedX, raw_px_y: usedY, Xcm: Xcm, Ycm: Ycm, sway: sway});
-      // update prev for LK next frame
-    }
-    if (prevGray){ try{ prevGray.delete(); }catch(e){} } prevGray = gray;
-    if (prevPts){ try{ prevPts.delete(); }catch(e){} } prevPts = next;
-    if (status) try{ status.delete(); }catch(e){}; if (err) try{ err.delete(); }catch(e){}
-  }).catch(e=>{ console.error('createImageBitmap error', e); });
-}
+function processFrame(){ if (!trackingInited) return; if (typeof cv==='undefined') return; const pw=320, ph=Math.max(80, Math.round(pw*(video.videoHeight/video.videoWidth||0.75))); createImageBitmap(video).then(bitmap=>{ const tmp=document.createElement('canvas'); tmp.width=pw; tmp.height=ph; const tctx=tmp.getContext('2d'); tctx.drawImage(bitmap,0,0,pw,ph); bitmap.close(); const imgd=tctx.getImageData(0,0,pw,ph); let gray=cv.matFromImageData(imgd); cv.cvtColor(gray, gray, cv.COLOR_RGBA2GRAY); let next=new cv.Mat(), status=new cv.Mat(), err=new cv.Mat(); try{ cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3); }catch(e){ console.warn(e); } let usedX=null, usedY=null; if (status && status.data[0]===1){ const procX=next.data32F[0], procY=next.data32F[1]; usedX = procX * (overlay.width / pw); usedY = procY * (overlay.height / ph); } else if (template){ let src=cv.matFromImageData(imgd); let g=new cv.Mat(); cv.cvtColor(src,g,cv.COLOR_RGBA2GRAY); let res=new cv.Mat(); cv.matchTemplate(g,template,res,cv.TM_CCOEFF_NORMED); let mm=cv.minMaxLoc(res); const procX = mm.maxLoc.x + template.cols/2, procY = mm.maxLoc.y + template.rows/2; usedX = procX * (overlay.width / pw); usedY = procY * (overlay.height / ph); res.delete(); g.delete(); src.delete(); } if (usedX !== null){ let Xcm, Ycm; if (useHomography && H){ const src=cv.matFromArray(1,1,cv.CV_32FC2,[usedX,usedY]); const dst=new cv.Mat(); cv.perspectiveTransform(src,dst,H); Xcm = dst.data32F[0]; Ycm = dst.data32F[1]; src.delete(); dst.delete(); } else { if (!pixelsPerCm){ console.warn('pixelsPerCm undefined'); return; } const baseX = baselineMid ? baselineMid.x : 0; const baseY = baselineMid ? baselineMid.y : 0; const dx_px = usedX - baseX; const dy_px = usedY - baseY; Xcm = - (dx_px) / pixelsPerCm; Ycm = (dy_px) / pixelsPerCm; } const time_s = performance.now()/1000.0; const sway = Math.hypot(Xcm, Ycm); data.push({t:time_s, px_x:usedX, px_y:usedY, Xcm:Xcm, Ycm:Ycm, sway:sway, eyes:eyesSel.value}); lastTracked={x:usedX,y:usedY}; } if (prevGray){ try{ prevGray.delete(); }catch(e){} } prevGray=gray; if (prevPts){ try{ prevPts.delete(); }catch(e){} } prevPts=next; if (status) try{ status.delete(); }catch(e){}; if (err) try{ err.delete(); }catch(e){}; }).catch(e=>{ console.error('proc error', e); }); }
 
-/* drawSpaghetti: uses data[].Xcm and data[].Ycm as offsets (cm) relative to baseline */
-function drawSpaghetti(){
-  pctx.clearRect(0,0,plot.width,plot.height);
-  if (!data.length) return;
-  const pts = data.map(d=>({x:d.Xcm, y:d.Ycm}));
-  let minX = Math.min(...pts.map(p=>p.x)), maxX = Math.max(...pts.map(p=>p.x));
-  let minY = Math.min(...pts.map(p=>p.y)), maxY = Math.max(...pts.map(p=>p.y));
-  if (maxX-minX < 0.01){ maxX+=0.5; minX-=0.5; }
-  if (maxY-minY < 0.01){ maxY+=0.5; minY-=0.5; }
-  const rangeX = maxX - minX, rangeY = maxY - minY;
-  // axes
-  pctx.strokeStyle='#eee'; pctx.beginPath(); pctx.moveTo(0,plot.height/2); pctx.lineTo(plot.width,plot.height/2); pctx.stroke();
-  pctx.beginPath(); pctx.moveTo(plot.width/2,0); pctx.lineTo(plot.width/2,plot.height); pctx.stroke();
-  // path
-  pctx.strokeStyle='#e91e63'; pctx.lineWidth=2; pctx.beginPath();
-  for (let i=0;i<pts.length;i++){
-    const nx = ((pts[i].x - minX)/rangeX) * plot.width;
-    const ny = plot.height - ((pts[i].y - minY)/rangeY) * plot.height;
-    if (i===0) pctx.moveTo(nx, ny); else pctx.lineTo(nx, ny);
-  }
-  pctx.stroke();
-  // current point
-  const cur = pts[pts.length-1];
-  const cx = ((cur.x - minX)/rangeX) * plot.width;
-  const cy = plot.height - ((cur.y - minY)/rangeY) * plot.height;
-  pctx.fillStyle='#2e7d32'; pctx.beginPath(); pctx.arc(cx, cy, 4, 0, Math.PI*2); pctx.fill();
-}
+function drawSpaghetti(){ pctx.clearRect(0,0,plotCanvas.width,plotCanvas.height); if (!data.length) return; const pts=data.map(d=>({x:d.Xcm,y:d.Ycm})); let minX=Math.min(...pts.map(p=>p.x)), maxX=Math.max(...pts.map(p=>p.x)); let minY=Math.min(...pts.map(p=>p.y)), maxY=Math.max(...pts.map(p=>p.y)); if (maxX-minX<0.01){ maxX+=0.5; minX-=0.5; } if (maxY-minY<0.01){ maxY+=0.5; minY-=0.5; } const rangeX=maxX-minX, rangeY=maxY-minY; pctx.fillStyle='#ffffff'; pctx.fillRect(0,0,plotCanvas.width,plotCanvas.height); pctx.strokeStyle='#f1f5f9'; pctx.lineWidth=1; for (let gx=0;gx<=10;gx++){ pctx.beginPath(); pctx.moveTo(gx*(plotCanvas.width/10),0); pctx.lineTo(gx*(plotCanvas.width/10),plotCanvas.height); pctx.stroke(); } for (let gy=0;gy<=8;gy++){ pctx.beginPath(); pctx.moveTo(0,gy*(plotCanvas.height/8)); pctx.lineTo(plotCanvas.width,gy*(plotCanvas.height/8)); pctx.stroke(); } pctx.fillStyle='#111827'; pctx.font='12px Arial'; pctx.fillText('ML (cm)',8,14); pctx.fillText('AP (cm)',plotCanvas.width-48,plotCanvas.height-6); pctx.strokeStyle='#ef4444'; pctx.lineWidth=2; pctx.beginPath(); for (let i=0;i<pts.length;i++){ const nx = ((pts[i].x - minX)/rangeX)*plotCanvas.width; const ny = plotCanvas.height - ((pts[i].y - minY)/rangeY)*plotCanvas.height; if (i===0) pctx.moveTo(nx,ny); else pctx.lineTo(nx,ny); } pctx.stroke(); const start=pts[0], end=pts[pts.length-1]; const sx=((start.x-minX)/rangeX)*plotCanvas.width, sy=plotCanvas.height-((start.y-minY)/rangeY)*plotCanvas.height; const ex=((end.x-minX)/rangeX)*plotCanvas.width, ey=plotCanvas.height-((end.y-minY)/rangeY)*plotCanvas.height; pctx.fillStyle='green'; pctx.beginPath(); pctx.arc(sx,sy,6,0,Math.PI*2); pctx.fill(); pctx.fillStyle='black'; pctx.fillText('Start', sx+8, sy+4); pctx.fillStyle='blue'; pctx.beginPath(); pctx.arc(ex,ey,6,0,Math.PI*2); pctx.fill(); pctx.fillStyle='white'; pctx.fillText('End', ex+8, ey+4); pctx.fillStyle='#111827'; pctx.font='11px Arial'; pctx.fillText(minX.toFixed(2),4,plotCanvas.height-4); pctx.fillText(maxX.toFixed(2),plotCanvas.width-48,plotCanvas.height-4); pctx.fillText(minY.toFixed(2),4,14); pctx.fillText(maxY.toFixed(2),4,plotCanvas.height-20); }
 
-/* compute live metrics */
-function updateMetrics(){
-  if (!data.length){ metricsEl.innerText = 'No data'; return; }
-  const sways = data.map(d=>d.sway);
-  const rms = Math.sqrt(sways.reduce((s,v)=>s+v*v,0)/sways.length);
-  const peak = Math.max(...sways);
-  let path=0; for (let i=0;i<data.length-1;i++){ const dx=data[i+1].Xcm - data[i].Xcm; const dy=data[i+1].Ycm - data[i].Ycm; path += Math.hypot(dx, dy); }
-  metricsEl.innerText = `Samples: ${data.length}\nRMS: ${rms.toFixed(3)} cm\nPeak: ${peak.toFixed(3)} cm\nPath length: ${path.toFixed(3)} cm\nCamera height (cm): ${camHeightInput.value}\nHomography: ${useHomography ? 'YES' : 'NO'}`;
-}
+function updateMetrics(){ if (!data.length){ totalSwayEl.innerText='0.000'; swayAreaEl.innerText='0.000'; mlDistEl.innerText='0.000'; apDistEl.innerText='0.000'; return; } const xs=data.map(d=>d.Xcm), ys=data.map(d=>d.Ycm); let path=0; for (let i=0;i<data.length-1;i++){ path += Math.hypot(data[i+1].Xcm - data[i].Xcm, data[i+1].Ycm - data[i].Ycm); } const mlDist=Math.max(...xs)-Math.min(...xs); const apDist=Math.max(...ys)-Math.min(...ys); const pts=xs.map((v,i)=>[xs[i],ys[i]]); const hull=convexHull(pts); const area=polygonArea(hull); totalSwayEl.innerText=path.toFixed(3); swayAreaEl.innerText=area.toFixed(3); mlDistEl.innerText=mlDist.toFixed(3); apDistEl.innerText=apDist.toFixed(3); }
 
-/* recording controls */
-function startRecording(){
-  if (!baselineMid){ alert('Set baseline midpoint first (Auto Set Midpoint)'); return; }
-  measuring = true; data = []; setStatus('recording');
-}
-function stopRecording(){
-  measuring = false; setStatus('stopped'); drawSpaghetti(); updateMetrics();
-}
+function convexHull(points){ if (points.length<=3) return points; points = points.map(p=>[p[0],p[1]]).sort((a,b)=>a[0]===b[0]?a[1]-b[1]:a[0]-b[0]); const cross=(o,a,b)=> (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]); const lower=[]; for (let p of points){ while(lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); } const upper=[]; for (let i=points.length-1;i>=0;i--){ const p=points[i]; while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); } upper.pop(); lower.pop(); return lower.concat(upper); }
 
-/* CSV export */
-function exportCSV(){
-  if (!data.length){ alert('No data'); return; }
-  const camH = parseFloat(camHeightInput.value) || 0;
-  const homUsed = useHomography ? 'yes' : 'no';
-  let header = `meta: camera_height_cm=${camH}, homography=${homUsed}\n`;
-  header += 't_s,raw_px_x,raw_px_y,X_cm,Y_cm,sway_cm\n';
-  const rows = data.map(d => [d.t.toFixed(3), d.raw_px_x.toFixed(2), d.raw_px_y.toFixed(2), d.Xcm.toFixed(3), d.Ycm.toFixed(3), d.sway.toFixed(3)].join(',')).join('\\n');
-  const csv = header + rows;
-  const blob = new Blob([csv], {type:'text/csv'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'sway_data.csv'; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 1500);
-}
+function polygonArea(poly){ if (!poly || poly.length<3) return 0; let a=0; for (let i=0;i<poly.length;i++){ const j=(i+1)%poly.length; a += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1]; } return Math.abs(a)/2.0; }
 
-/* overlay clickable manual midpoint */
-overlay.addEventListener('click', (ev)=>{
-  if (!videoReady) return;
-  const r = overlay.getBoundingClientRect();
-  const x = (ev.clientX - r.left) * (overlay.width / r.width);
-  const y = (ev.clientY - r.top) * (overlay.height / r.height);
-  if (useHomography && H && typeof cv !== 'undefined'){
-    const src = cv.matFromArray(1,1,cv.CV_32FC2, [x, y]);
-    const dst = new cv.Mat(); cv.perspectiveTransform(src, dst, H);
-    baselineMid = {x: dst.data32F[0], y: dst.data32F[1], unit: 'cm'};
-    src.delete(); dst.delete();
-    alert('Manual baseline midpoint set in world cm');
-  } else {
-    baselineMid = {x: x, y: y, unit: 'px'};
-    alert('Manual baseline midpoint set in image px');
-  }
-  initTracking({x:x, y:y});
-});
+let testTimer=null;
+startRecBtn.onclick = ()=>{ if (!baselineMid){ alert('Set baseline midpoint first'); return; } const dur=parseInt(durationSel.value,10)||30; let remaining=dur; measuring=true; data=[]; lastTracked=null; setStatus('Recording: '+remaining+'s'); timerEl.innerText='Timer: '+remaining+'s'; testTimer=setInterval(()=>{ remaining-=1; timerEl.innerText='Timer: '+remaining+'s'; if (remaining<=0){ clearInterval(testTimer); stopRecording(); } },1000); };
 
-/* wiring */
-startCamBtn.addEventListener('click', startCamera);
-stopCamBtn.addEventListener('click', stopCamera);
-detect2Btn.addEventListener('click', detect2Markers);
-detect3Btn.addEventListener('click', detect3Markers);
-autoMidBtn.addEventListener('click', autoSetMidpoint);
-startRecBtn.addEventListener('click', startRecording);
-stopRecBtn.addEventListener('click', stopRecording);
-exportBtn.addEventListener('click', exportCSV);
-homMode.addEventListener('change', (e)=>{ if (e.target.value === 'homography'){ if (!H) alert('No homography computed yet. Run 3-marker calibration first.'); else useHomography = true; } else useHomography = false; });
+stopRecBtn.onclick = ()=>{ if (testTimer) clearInterval(testTimer); stopRecording(); };
+function stopRecording(){ measuring=false; setStatus('stopped'); drawSpaghetti(); updateMetrics(); alert('Recording stopped'); }
 
-/* init */
-video.addEventListener('loadedmetadata', ()=>{ ensureOverlaySize(); videoReady = true; });
+exportBtn.onclick = ()=>{ if (!data.length){ alert('No data'); return; } const camH=120; const homUsed=useHomography?'yes':'no'; let header = `meta: camera_height_cm=${camH}, homography=${homUsed}, eyes=${eyesSel.value}\n`; header += 't_s,px_x,px_y,X_cm,Y_cm,sway_cm\n'; const rows = data.map(d=>[d.t.toFixed(3), d.px_x.toFixed(2), d.px_y.toFixed(2), d.Xcm.toFixed(3), d.Ycm.toFixed(3), d.sway.toFixed(3)].join(',')).join('\n'); const csv = header + rows; const blob = new Blob([csv], {type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='sway_data.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); };
+
+exportPlotBtn.onclick = ()=>{ drawSpaghetti(); const link=document.createElement('a'); link.href=plotCanvas.toDataURL('image/png'); link.download='sway_plot.png'; link.click(); };
+
+clearPlotBtn.onclick = ()=>{ data=[]; drawSpaghetti(); updateMetrics(); };
+
+video.addEventListener('loadedmetadata', ()=>{ ensureOverlaySize(); videoReady=true; });
 setStatus('idle — start camera when ready');
-
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
