@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>SwayMed — Fixed Camera Launch & UI</title>
+  <title>SwayMed — Fixed Camera Launch & UI (v2)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <style>
     :root{--accent:#0b63d8;--muted:#666}
@@ -22,7 +22,7 @@
 </head>
 <body>
   <header class="card">
-    <div><strong>SwayMed</strong> <span style="color:var(--muted);margin-left:8px">— fixed camera launch</span></div>
+    <div><strong>SwayMed</strong> <span style="color:var(--muted);margin-left:8px">— v2 small-sticker detection</span></div>
     <div style="text-align:right"><div style="font-weight:600">System</div><div style="font-size:12px;color:var(--muted)">Local processing</div></div>
   </header>
 
@@ -37,9 +37,9 @@
       <div class="controls" style="margin-top:10px">
         <button id="startCam" class="primary">Start Camera</button>
         <button id="stopCam">Stop Camera</button>
-        <button id="detectMarkers">Auto-Calibrate</button>
+        <button id="detectMarkers">Auto-Calibrate (detect small stickers)</button>
         <button id="selectTrack">Select Track</button>
-        <button id="autoSelect">Auto Select Track</button>
+        <button id="autoSelect">Auto Select Track (closest to center on line)</button>
         <button id="startRec" class="primary">Start Assessment</button>
         <button id="stopRec">Stop</button>
         <button id="exportCSV">Export CSV</button>
@@ -57,7 +57,7 @@
       <pre id="metrics">No data</pre>
       <h4 style="margin-top:12px">Instructions</h4>
       <ol>
-        <li>Place two colored stickers ~30 cm apart on the floor.</li>
+        <li>Place two small colored stickers ~30 cm apart on the floor.</li>
         <li>Strap phone to chest with rear camera facing floor.</li>
         <li>Start Camera → Auto-Calibrate → Auto Select Track → Start → Stop.</li>
       </ol>
@@ -68,8 +68,12 @@
 
 <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoaded()"></script>
 <script>
-/* Robust camera launch: waits for loadedmetadata, uses playsinline, maps canvas size to video.videoWidth/Height,
-   ensures buttons are connected, handles errors, and avoids createImageBitmap until video ready. */
+/* v2 changes:
+ - Marker detection tuned to prefer small blobs (sticker-sized).
+ - Auto-select projects camera center onto line between stickers and clamps to segment.
+ - If projection outside segment, selects nearest sticker.
+ - Keeps UI/UX behavior; all buttons wired.
+*/
 
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
@@ -91,32 +95,26 @@ function setStatus(s){ statusEl.innerText = s; }
 async function startCamera(){
   try{
     setStatus('Requesting camera');
-    // Use ideal facingMode environment but do not force exact (safer)
     const constraints = { video: { facingMode: { ideal: 'environment' }, frameRate: { ideal: 30 } }, audio: false };
     stream = await navigator.mediaDevices.getUserMedia(constraints);
     video.srcObject = stream;
-    // ensure playsinline for iOS
     video.setAttribute('playsinline', '');
     await video.play();
-    // wait until metadata loaded to get videoWidth/Height
     await new Promise((res)=>{
       if (video.videoWidth && video.videoHeight) return res();
       const onmd = ()=>{ video.removeEventListener('loadedmetadata', onmd); res(); };
       video.addEventListener('loadedmetadata', onmd);
-      // also timeout to avoid hang
       setTimeout(res, 2000);
     });
-    // set overlay to actual video resolution to avoid scaling mismatch
     overlay.width = video.videoWidth || video.clientWidth || 640;
     overlay.height = video.videoHeight || video.clientHeight || 480;
-    // Scale displayed video area to fixed height while preserving intrinsic resolution for canvas mapping
     document.getElementById('videoArea').style.height = Math.min(window.innerHeight * 0.6, 720) + 'px';
     videoReady = true;
     setStatus('Camera started (' + overlay.width + 'x' + overlay.height + ')');
     startLoop();
   }catch(err){
     console.error('startCamera error', err);
-    alert('Camera error: ' + err.message || err);
+    alert('Camera error: ' + (err.message || err));
     setStatus('camera error');
   }
 }
@@ -133,22 +131,19 @@ function stopCamera(){
   }
 }
 
-/* Main rendering loop — draws video to overlay and calls processing at controlled rate */
 let lastProcess = 0;
-const PROCESS_INTERVAL = 50; // ~20 fps
+const PROCESS_INTERVAL = 50;
 
 function startLoop(){
   function loop(ts){
     try{
       if (videoReady){
-        // draw video frame into overlay using intrinsic resolution mapping
         octx.clearRect(0,0,overlay.width,overlay.height);
-        // drawImage uses displayed video but we map to overlay pixel size
         octx.drawImage(video, 0, 0, overlay.width, overlay.height);
-        // draw markers/tracking point
+        // draw markers & labels (small markers only)
         markers.forEach((m,i)=>{
-          octx.beginPath(); octx.fillStyle='red'; octx.arc(m.x, m.y, 8, 0, 2*Math.PI); octx.fill();
-          octx.fillStyle='white'; octx.fillText(i+1, m.x+8, m.y+4);
+          octx.beginPath(); octx.fillStyle='red'; octx.arc(m.x,m.y,6,0,2*Math.PI); octx.fill();
+          octx.fillStyle='white'; octx.fillText(i+1,m.x+8,m.y+4);
         });
         if (trackingPoint){
           octx.strokeStyle='lime'; octx.lineWidth=2; octx.beginPath(); octx.arc(trackingPoint.x, trackingPoint.y, 10,0,2*Math.PI); octx.stroke();
@@ -164,21 +159,17 @@ function startLoop(){
   raf = requestAnimationFrame(loop);
 }
 
-/* marker detection: single-frame via downscale with createImageBitmap if available; maps back to overlay coords */
+/* Improved small-sticker detection logic */
 async function detectMarkers(){
   if (!videoReady){ alert('Start camera first'); return; }
-  setStatus('Detecting markers — hold still');
+  setStatus('Detecting small stickers — hold still');
   try{
     const pw = 420;
-    const ph = Math.round(pw * (video.videoHeight / video.videoWidth || 0.75));
-    // create offscreen bitmap if supported
+    const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
     let bitmap;
-    try{
-      bitmap = await createImageBitmap(video);
-    }catch(e){
-      // fallback: draw to temp canvas
+    try{ bitmap = await createImageBitmap(video); } catch(e){
       const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-      const tctx = tmp.getContext('2d'); tctx.drawImage(video, 0, 0, pw, ph);
+      tmp.getContext('2d').drawImage(video, 0, 0, pw, ph);
       bitmap = await createImageBitmap(tmp);
     }
     const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
@@ -191,12 +182,15 @@ async function detectMarkers(){
       const r=dataArr[i], g=dataArr[i+1], b=dataArr[i+2];
       const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
       const sat = mx===0 ? 0 : (mx-mn)/mx;
-      mask[j] = (sat > 0.35 && mx > 90) ? 1 : 0;
+      // stronger thresholds to focus on small colored stickers: high saturation and reasonably bright
+      mask[j] = (sat > 0.4 && mx > 100) ? 1 : 0;
     }
-    // flood components
+    // connected components via flood fill; only accept blobs in small size range
     const visited = new Uint8Array(pw*ph);
     const blobs = [];
     const stack = [];
+    const MIN_BLOB = 25;   // lower bound for sticker pixels at proc resolution
+    const MAX_BLOB = 2500; // upper bound to avoid large colored regions
     for (let y=0;y<ph;y++){
       for (let x=0;x<pw;x++){
         const idx = y*pw + x;
@@ -208,44 +202,68 @@ async function detectMarkers(){
             const cx = cur % pw, cy = Math.floor(cur / pw);
             count++; sumx += cx; sumy += cy;
             const nlist = [cur-1, cur+1, cur-pw, cur+pw];
-            for (let n of nlist){
+            for (const n of nlist){
               if (n>=0 && n<pw*ph && mask[n] && !visited[n]){ visited[n]=1; stack.push(n); }
             }
           }
-          if (count > 60) blobs.push({count, cx: sumx/count, cy: sumy/count});
+          if (count >= MIN_BLOB && count <= MAX_BLOB){
+            blobs.push({count, cx: sumx/count, cy: sumy/count});
+          }
         }
       }
     }
     if (blobs.length < 2){
-      setStatus('Markers not found. Try brighter stickers or move camera closer.');
-      alert('Found ' + blobs.length + ' color blobs. Ensure markers visible.');
+      setStatus('Markers not found. Try smaller stickers, brighter light, or move camera closer.');
+      alert('Found ' + blobs.length + ' small color blob(s). Ensure two small colored stickers are visible.');
+      markers = [];
       return;
     }
-    blobs.sort((a,b)=>b.count - a.count);
+    // prefer blobs near camera center (so we avoid large background colored areas even if within size)
+    const centerX = pw/2, centerY = ph/2;
+    blobs.sort((a,b)=>{
+      const da = Math.hypot(a.cx-centerX, a.cy-centerY);
+      const db = Math.hypot(b.cx-centerX, b.cy-centerY);
+      return da - db;
+    });
+    // take two nearest-to-center blobs
     const b1 = blobs[0], b2 = blobs[1];
     const scaleX = overlay.width / pw, scaleY = overlay.height / ph;
-    markers = [{x: b1.cx * scaleX, y: b1.cy * scaleY}, {x: b2.cx * scaleX, y: b2.cy * scaleY}];
+    markers = [{x: b1.cx * scaleX, y: b1.cy * scaleY, area: b1.count}, {x: b2.cx * scaleX, y: b2.cy * scaleY, area: b2.count}];
     const dx = markers[0].x - markers[1].x, dy = markers[0].y - markers[1].y;
     const px = Math.hypot(dx, dy);
-    pixelsPerCm = px / (parseFloat(30) || 30);
+    pixelsPerCm = px / 30.0;
     setStatus('Markers detected. px/cm=' + pixelsPerCm.toFixed(3));
     alert('Calibration complete: ' + px.toFixed(1) + ' px = 30 cm');
   }catch(err){
     console.error('detectMarkers error', err);
     setStatus('marker detect failed');
-    alert('Marker detection error: ' + err.message);
+    alert('Marker detection error: ' + (err.message || err));
   }
 }
 
-/* auto select midpoint */
+/* Auto-select: project camera center onto line between markers, clamp to segment */
 function autoSelectTrack(){
   if (markers.length < 2){ alert('Detect markers first'); return; }
-  trackingPoint = {x: (markers[0].x + markers[1].x)/2, y: (markers[0].y + markers[1].y)/2};
+  const A = markers[0], B = markers[1];
+  const cx = overlay.width / 2, cy = overlay.height / 2; // camera center in overlay coords
+  const ABx = B.x - A.x, ABy = B.y - A.y;
+  const ACx = cx - A.x, ACy = cy - A.y;
+  const denom = ABx*ABx + ABy*ABy;
+  let t = 0;
+  if (denom > 0) t = (ACx*ABx + ACy*ABy) / denom;
+  // clamp to [0,1] to stay on segment; this yields the point on segment closest to camera center
+  t = Math.max(0, Math.min(1, t));
+  const px = A.x + t*ABx;
+  const py = A.y + t*ABy;
+  trackingPoint = {x: px, y: py};
+  // If projection is exactly at endpoints, ensure it's the sticker itself (starts from sticker)
+  if (t <= 0.001) { trackingPoint = {x: A.x, y: A.y}; }
+  if (t >= 0.999) { trackingPoint = {x: B.x, y: B.y}; }
   initTracking(trackingPoint);
-  setStatus('Tracking point auto-selected');
+  setStatus('Tracking point auto-selected (on line, closest to center)');
 }
 
-/* manual select via click */
+/* Manual select */
 function enableManualSelect(){
   if (!videoReady){ alert('Start camera first'); return; }
   setStatus('Tap the video to select a point to track');
@@ -261,12 +279,11 @@ function enableManualSelect(){
   overlay.addEventListener('click', handler);
 }
 
-/* init tracking using OpenCV template from downscaled image */
+/* init tracking uses OpenCV to capture template */
 function initTracking(pt){
   if (typeof cv === 'undefined'){ alert('OpenCV not loaded; tracking requires OpenCV'); return; }
-  // sample template in a downscaled canvas
   const pw = 320;
-  const ph = Math.round(pw * (video.videoHeight / video.videoWidth || 0.75));
+  const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
   const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
   const tctx = tmp.getContext('2d'); tctx.drawImage(video, 0, 0, pw, ph);
   const imgd = tctx.getImageData(0,0,pw,ph);
@@ -288,14 +305,15 @@ function initTracking(pt){
     grayFull.delete(); src.delete();
   }
   trackingInited = true; data = []; baseline = null; lastFiltered = null;
+  setStatus('Tracking initialized');
 }
 
-/* process frame: LK flow with template fallback (proc on downscaled image) */
+/* process frame similar to previous but unchanged */
 function processFrame(){
   if (!trackingInited) return;
   try{
     const pw = 320;
-    const ph = Math.round(pw * (video.videoHeight / video.videoWidth || 0.75));
+    const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
     createImageBitmap(video).then(bitmap=>{
       const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
       const tctx = tmp.getContext('2d'); tctx.drawImage(bitmap, 0, 0, pw, ph); bitmap.close();
@@ -303,9 +321,7 @@ function processFrame(){
       let gray = cv.matFromImageData(imgd);
       cv.cvtColor(gray, gray, cv.COLOR_RGBA2GRAY);
       let next = new cv.Mat(), status = new cv.Mat(), err = new cv.Mat();
-      try{
-        cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3, new cv.TermCriteria(cv.TermCriteria_EPS|cv.TermCriteria_COUNT, 20, 0.03));
-      }catch(e){}
+      try{ cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3, new cv.TermCriteria(cv.TermCriteria_EPS|cv.TermCriteria_COUNT, 20, 0.03)); }catch(e){}
       let usedX = null, usedY = null;
       if (status && status.data[0] === 1){
         usedX = next.data32F[0]; usedY = next.data32F[1];
@@ -363,7 +379,6 @@ document.getElementById('exportCSV').addEventListener('click', exportCSV);
 /* OpenCV loader callback */
 function onOpenCvLoaded(){ console.log('OpenCV loaded'); procReady = true; setStatus('OpenCV loaded'); }
 
-/* defensive: if OpenCV not loaded, inform user */
 setTimeout(()=>{ if (typeof cv === 'undefined') setStatus('OpenCV not loaded; tracking disabled until loaded.'); }, 3000);
 
 </script>
