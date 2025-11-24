@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>SwayMed — Stability Fixes</title>
+<title>SwayMed — Live-tracking fixes</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
 :root{--accent:#5b6cff;--muted:#6b7280}
@@ -27,13 +27,12 @@ video, canvas{width:100%;height:100%;display:block;object-fit:cover}
 </head>
 <body>
 <div class="container">
-  <div class="header"><div class="logo">S</div><div><strong>SwayMed — Stability Fixes</strong><div class="small">Improved marker recovery, smoothing, sensitivity control</div></div></div>
+  <div class="header"><div class="logo">S</div><div><strong>SwayMed — Live-tracking fixes</strong><div class="small">Markers, green tracking point, live plot while test runs</div></div></div>
 
   <div class="grid">
     <div class="card">
       <strong>Live Camera & Controls</strong>
       <div id="videoArea" style="margin-top:8px">
-        <!-- SINGLE video preview and single overlay canvas (only one visible plane) -->
         <video id="video" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
       </div>
@@ -104,15 +103,7 @@ video, canvas{width:100%;height:100%;display:block;object-fit:cover}
 
 <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 <script>
-// Key changes in this build (engineering notes):
-// - Only one video element + one overlay canvas (removes duplicate preview planes).
-// - Pixel->cm conversion uses measured marker distance (30 cm reference).
-// - Smoothing applied (exponential moving average) to reduce noise and jitter.
-// - Sensitivity multiplier to tune plot scale (user-adjustable).
-// - Automatic marker re-detection and tracking re-init on loss or large shake.
-// - Restored instructions text and explicit behavior preservation.
-
-// DOM
+// DOM elements
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
 const octx = overlay.getContext('2d');
@@ -129,6 +120,7 @@ const startRecBtn = document.getElementById('startRec');
 const stopRecBtn = document.getElementById('stopRec');
 const exportCSVBtn = document.getElementById('exportCSV');
 const exportPlotBtn = document.getElementById('exportPlot');
+
 const sensSlider = document.getElementById('sensitivity');
 const smoothingSlider = document.getElementById('smoothing');
 const sensVal = document.getElementById('sensVal');
@@ -140,15 +132,17 @@ const mlDistEl = document.getElementById('mlDist');
 const apDistEl = document.getElementById('apDist');
 const timerEl = document.getElementById('timer');
 
+// state variables
 let stream = null, videoReady = false;
 let markers = [], thirdMarker = null;
-let pixelsPerCm = null; // pixel-to-cm factor (px per cm)
-let baselineMid = null; // in image px or world cm if homography
+let pixelsPerCm = null;         // px per cm
+let baselineMid = null;         // px baseline midpoint (set by auto/manual)
 let useHomography = false, H = null;
 let prevGray = null, prevPts = null, template = null;
-let trackingInited = false, measuring = false;
+let trackingInited = false;
+let measuring = false;          // <-- only when measuring true we will record samples
 let data = [], lastTracked = null;
-let lastProcess = 0;
+let lastProcess = 0, lastLoop = 0;
 let lastGoodTimestamp = performance.now();
 
 // smoothing and sensitivity
@@ -157,7 +151,7 @@ let sensitivity = parseFloat(sensSlider.value);
 smoothingSlider.addEventListener('input', ()=>{ alpha = parseFloat(smoothingSlider.value); smoothVal.innerText = alpha.toFixed(2); });
 sensSlider.addEventListener('input', ()=>{ sensitivity = parseFloat(sensSlider.value); sensVal.innerText = sensitivity.toFixed(2); });
 
-// Ensure single preview plane sizing
+// ensure canvas sizes match video
 function ensureSize(){
   overlay.width = video.videoWidth || video.clientWidth || 640;
   overlay.height = video.videoHeight || video.clientHeight || 480;
@@ -165,6 +159,7 @@ function ensureSize(){
   plotCanvas.height = 320;
 }
 
+// start/stop camera
 startCamBtn.onclick = async ()=>{
   try{
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
@@ -179,13 +174,11 @@ startCamBtn.onclick = async ()=>{
     ensureSize();
     videoReady = true;
     requestAnimationFrame(loop);
-  }catch(e){
-    alert('Camera error: ' + e);
-  }
+  }catch(e){ alert('Camera error: ' + e); }
 };
 stopCamBtn.onclick = ()=>{ if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; video.pause(); video.srcObject=null; videoReady=false; } };
 
-// small capture for marker detection (reduced resolution for speed)
+// small capture for marker detection (faster)
 async function captureSmall(pw=480){
   const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
   const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
@@ -193,16 +186,16 @@ async function captureSmall(pw=480){
   return tctx.getImageData(0,0,pw,ph);
 }
 
-// improved blob detection tuned for small stickers (area thresholds tightened)
+// detect blobs (tuned for small colored stickers)
 async function detectBlobs(){
   const imgd = await captureSmall(480);
-  const pw = imgd.width, ph = imgd.height; const d = imgd.data;
+  const pw = imgd.width, ph = imgd.height, d = imgd.data;
   const mask = new Uint8Array(pw*ph);
   for (let i=0,j=0;i<d.length;i+=4,j++){
     const r=d[i], g=d[i+1], b=d[i+2]; const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
     const sat = mx===0?0:(mx-mn)/mx;
-    // stricter threshold to find small saturated stickers, ignore large areas
-    mask[j] = (sat>0.4 && mx>120)?1:0;
+    // stricter thresholds for small saturated stickers
+    mask[j] = (sat>0.38 && mx>110) ? 1 : 0;
   }
   const visited = new Uint8Array(pw*ph); const blobs=[];
   for (let y=0;y<ph;y++){
@@ -212,19 +205,16 @@ async function detectBlobs(){
         let stack=[idx], sumx=0, sumy=0, c=0;
         visited[idx]=1;
         while(stack.length){
-          const cur = stack.pop(); const cx = cur % pw, cy = Math.floor(cur / pw);
-          sumx += cx; sumy += cy; c++;
+          const cur = stack.pop(); const cx = cur % pw, cy = Math.floor(cur/pw);
+          sumx+=cx; sumy+=cy; c++;
           const n = [cur-1,cur+1,cur-pw,cur+pw];
           for (const nn of n) if (nn>=0 && nn<pw*ph && mask[nn] && !visited[nn]){ visited[nn]=1; stack.push(nn); }
         }
-        // accept small clusters likely to be stickers
-        if (c > 8 && c < 2000){
-          blobs.push({cx: sumx/c, cy: sumy/c, c});
-        }
+        if (c > 8 && c < 2000) blobs.push({cx: sumx/c, cy: sumy/c, c});
       }
     }
   }
-  // sort by closeness to center (prefer central blobs)
+  // sort by closeness to center
   const cx = pw/2, cy = ph/2;
   blobs.sort((a,b)=>Math.hypot(a.cx-cx,a.cy-cy)-Math.hypot(b.cx-cx,b.cy-cy));
   return {blobs, pw, ph};
@@ -237,15 +227,17 @@ detect2Btn.onclick = async ()=>{
   const blobs = res.blobs;
   if (blobs.length < 2){ alert('Found ' + blobs.length + ' sticker(s). Need at least 2.'); return; }
   const b1 = blobs[0], b2 = blobs[1];
-  const sx = overlay.width / res.pw, sy = overlay.height / res.ph;
-  markers = [{x: b1.cx * sx, y: b1.cy * sy}, {x: b2.cx * sx, y: b2.cy * sy}];
-  // compute pixels per cm (px per cm)
+  const sx = overlay.width / res.pw;
+  markers = [{x: b1.cx * sx, y: b1.cy * sx*(res.ph/res.pw)}, {x: b2.cx * sx, y: b2.cy * sx*(res.ph/res.pw)}];
+  // compute pixelsPerCm (px per cm)
   const pxDist = Math.hypot(markers[0].x - markers[1].x, markers[0].y - markers[1].y);
-  pixelsPerCm = pxDist / 30.0; // user placed stickers 30 cm apart
+  pixelsPerCm = pxDist / 30.0;
+  // do not auto-start recording — user must press Auto Set Midpoint then Start Test
   alert('2-marker calibration OK — px/cm=' + pixelsPerCm.toFixed(3));
+  lastGoodTimestamp = performance.now();
 };
 
-// 3-marker homography calibration
+// 3-marker homography
 detect3Btn.onclick = async ()=>{
   if (!videoReady){ alert('Start camera first'); return; }
   if (typeof cv === 'undefined'){ alert('OpenCV.js required for homography'); return; }
@@ -255,28 +247,29 @@ detect3Btn.onclick = async ()=>{
   const b1 = blobs[0], b2 = blobs[1], b3 = blobs[2];
   const sx = overlay.width / res.pw, sy = overlay.height / res.ph;
   const p1 = {x: b1.cx * sx, y: b1.cy * sy}, p2 = {x: b2.cx * sx, y: b2.cy * sy}, p3 = {x: b3.cx * sx, y: b3.cy * sy};
-  // define world points assume p1->(0,0), p2->(30,0), p3->(0,30) cm basis (user should place approx L-shape)
   const src = cv.matFromArray(3,1,cv.CV_32FC2, [p1.x,p1.y,p2.x,p2.y,p3.x,p3.y]);
   const dst = cv.matFromArray(3,1,cv.CV_32FC2, [0,0, 30,0, 0,30]);
   const Hmat = cv.findHomography(src, dst);
   if (!Hmat || Hmat.empty()){ alert('Homography failed'); src.delete(); dst.delete(); return; }
   H = Hmat; useHomography = true; markers = [p1,p2]; thirdMarker = p3;
-  // when using homography, pixelsPerCm becomes variable; but keep px/cm from markers average in image for reference
   const pxDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
   pixelsPerCm = pxDist / 30.0;
   alert('3-marker homography OK — px/cm=' + pixelsPerCm.toFixed(3));
   src.delete(); dst.delete();
+  lastGoodTimestamp = performance.now();
 };
 
 // Auto set midpoint
 autoMidBtn.onclick = ()=>{
   if (markers.length < 2){ alert('Calibrate first'); return; }
-  const mx = (markers[0].x + markers[1].x)/2, my = (markers[0].y + markers[1].y)/2;
+  const mx = (markers[0].x + markers[1].x)/2;
+  const my = (markers[0].y + markers[1].y)/2;
   baselineMid = {x: mx, y: my, unit: 'px'};
   initTracking({x: mx, y: my});
   alert('Midpoint set and tracker initialized');
 };
 
+// Manual midpoint by tapping video
 manualMidBtn.onclick = ()=>{ alert('Tap video to set midpoint'); };
 overlay.addEventListener('click', (ev)=>{
   if (!videoReady) return;
@@ -284,11 +277,11 @@ overlay.addEventListener('click', (ev)=>{
   const x = (ev.clientX - r.left) * (overlay.width / r.width);
   const y = (ev.clientY - r.top) * (overlay.height / r.height);
   baselineMid = {x: x, y: y, unit: 'px'};
-  initTracking({x:x,y:y});
+  initTracking({x: x, y: y});
   alert('Manual midpoint set and tracker initialized');
 });
 
-// Tracking init using LK template or initial point
+// init tracking with LK and template
 function initTracking(pt){
   if (typeof cv === 'undefined'){ trackingInited=false; return; }
   const pw = 320, ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
@@ -301,17 +294,18 @@ function initTracking(pt){
   const procX = Math.round(pt.x * (pw / overlay.width));
   const procY = Math.round(pt.y * (ph / overlay.height));
   prevPts = new cv.Mat(1,1,cv.CV_32FC2); prevPts.data32F[0] = procX; prevPts.data32F[1] = procY;
-  // template for template matching fallback
-  const tsize = 41; const rx = Math.max(0, procX - Math.floor(tsize/2)), ry = Math.max(0, procY - Math.floor(tsize/2));
+  const tsize = 41;
+  const rx = Math.max(0, procX - Math.floor(tsize/2)), ry = Math.max(0, procY - Math.floor(tsize/2));
   const rw = Math.min(tsize, pw - rx), rh = Math.min(tsize, ph - ry);
   if (template){ try{ template.delete(); }catch(e){} template=null; }
   if (rw>4 && rh>4){ const src = cv.matFromImageData(imgd); let g = new cv.Mat(); cv.cvtColor(src,g,cv.COLOR_RGBA2GRAY); template = g.roi(new cv.Rect(rx,ry,rw,rh)).clone(); g.delete(); src.delete(); }
   trackingInited = true;
-  data = [];
-  lastTracked = {x: pt.x, y: pt.y, Xcm:0, Ycm:0};
+  data = []; lastTracked = {x: pt.x, y: pt.y, Xcm:0, Ycm:0};
+  lastGoodTimestamp = performance.now();
 }
 
-// process frame: optical flow + fallback template matching + pixel->cm conversion + smoothing
+// process frame - LK + template fallback + convert to cm + smoothing.
+// IMPORTANT: only push samples to 'data' when measuring === true
 function processFrame(){
   if (!trackingInited) return;
   if (typeof cv === 'undefined') return;
@@ -324,15 +318,13 @@ function processFrame(){
     let next = new cv.Mat(), status = new cv.Mat(), err = new cv.Mat();
     try{
       cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3);
-    }catch(e){
-      console.warn('LK error', e);
-    }
+    }catch(e){ console.warn('LK error', e); }
     let usedX = null, usedY = null;
     if (status && status.data[0] === 1){
       const procX = next.data32F[0], procY = next.data32F[1];
       usedX = procX * (overlay.width / pw); usedY = procY * (overlay.height / ph);
     } else if (template){
-      // fallback to template matching if LK fails
+      // fallback to template matching
       let src = cv.matFromImageData(imgd); let g = new cv.Mat(); cv.cvtColor(src,g,cv.COLOR_RGBA2GRAY);
       let res = new cv.Mat(); cv.matchTemplate(g, template, res, cv.TM_CCOEFF_NORMED); let mm = cv.minMaxLoc(res);
       const procX = mm.maxLoc.x + template.cols/2, procY = mm.maxLoc.y + template.rows/2;
@@ -341,7 +333,7 @@ function processFrame(){
     }
 
     if (usedX !== null){
-      // pixel->cm
+      // pixel->cm conversion
       let Xcm = 0, Ycm = 0;
       if (useHomography && H){
         const src = cv.matFromArray(1,1,cv.CV_32FC2, [usedX, usedY]); const dst = new cv.Mat();
@@ -350,25 +342,18 @@ function processFrame(){
         src.delete(); dst.delete();
       } else {
         if (!pixelsPerCm){
-          // if px/cm not set, skip until calibration
-          // attempt automatic re-detect of markers if missing
+          // try auto redetect if px/cm missing
           attemptAutoRedetect();
-          prevGray && prevGray.delete();
-          prevGray = gray;
-          prevPts && prevPts.delete();
-          prevPts = next;
-          status.delete(); err.delete();
-          return;
+        } else {
+          const baseX = baselineMid ? baselineMid.x : overlay.width/2;
+          const baseY = baselineMid ? baselineMid.y : overlay.height/2;
+          const dx_px = usedX - baseX, dy_px = usedY - baseY;
+          Xcm = -dx_px / pixelsPerCm * sensitivity;
+          Ycm = dy_px / pixelsPerCm * sensitivity;
         }
-        const baseX = baselineMid ? baselineMid.x : overlay.width/2;
-        const baseY = baselineMid ? baselineMid.y : overlay.height/2;
-        const dx_px = usedX - baseX, dy_px = usedY - baseY;
-        // invert X to map subject-right -> positive
-        Xcm = -dx_px / pixelsPerCm * sensitivity;
-        Ycm = dy_px / pixelsPerCm * sensitivity;
       }
 
-      // smoothing (EMA)
+      // smoothing (EMA) applied to tracked coords and world coords
       if (!lastTracked || typeof lastTracked.Xcm === 'undefined'){
         lastTracked = {x: usedX, y: usedY, Xcm: Xcm, Ycm: Ycm};
       } else {
@@ -378,9 +363,13 @@ function processFrame(){
         lastTracked.y = alpha * lastTracked.y + (1-alpha) * usedY;
       }
 
-      const time_s = performance.now()/1000.0;
-      const sway = Math.hypot(lastTracked.Xcm, lastTracked.Ycm);
-      data.push({t: time_s, px_x: usedX, px_y: usedY, Xcm: lastTracked.Xcm, Ycm: lastTracked.Ycm, sway: sway});
+      // RECORD samples ONLY WHEN measuring === true
+      if (measuring){
+        const time_s = performance.now()/1000.0;
+        const sway = Math.hypot(lastTracked.Xcm, lastTracked.Ycm);
+        data.push({t: time_s, px_x: usedX, px_y: usedY, Xcm: lastTracked.Xcm, Ycm: lastTracked.Ycm, sway: sway});
+      }
+
       lastGoodTimestamp = performance.now();
     }
 
@@ -392,7 +381,7 @@ function processFrame(){
   }).catch(e=>{ console.error('processFrame error', e); });
 }
 
-// automatic re-detection when markers lost or big shake detected
+// attempt background re-detection of markers (non-blocking)
 function attemptAutoRedetect(){
   detectBlobs().then(res=>{
     const blobs = res.blobs;
@@ -400,26 +389,23 @@ function attemptAutoRedetect(){
       const b1 = blobs[0], b2 = blobs[1];
       const sx = overlay.width / res.pw, sy = overlay.height / res.ph;
       const m1 = {x: b1.cx * sx, y: b1.cy * sy}, m2 = {x: b2.cx * sx, y: b2.cy * sy};
-      // update markers and px/cm
       markers = [m1, m2];
       pixelsPerCm = Math.hypot(m1.x - m2.x, m1.y - m2.y) / 30.0;
-      // if baseline midpoint not set, set it
-      if (!baselineMid) baselineMid = {x: (m1.x + m2.x)/2, y: (m1.y + m2.y)/2, unit:'px'};
+      if (!baselineMid) baselineMid = {x: (m1.x+m2.x)/2, y: (m1.y+m2.y)/2, unit:'px'};
       lastGoodTimestamp = performance.now();
-      console.log('Auto redetect: markers updated, px/cm=', pixelsPerCm);
+      console.log('Auto redetect success px/cm=', pixelsPerCm);
     }
   }).catch(e=>{ console.warn('auto redetect failed', e); });
 }
 
-// Loop: draw video, overlays, markers and tracked point
-let lastLoop = 0;
+// draw overlays + run processing loop
 function loop(ts){
   if (videoReady){
     ensureSize();
     octx.clearRect(0,0,overlay.width,overlay.height);
     octx.drawImage(video,0,0,overlay.width,overlay.height);
 
-    // draw markers if available
+    // draw markers (red) if present
     if (markers && markers.length >= 2){
       octx.strokeStyle = 'white'; octx.lineWidth = 2;
       octx.beginPath(); octx.moveTo(markers[0].x, markers[0].y); octx.lineTo(markers[1].x, markers[1].y); octx.stroke();
@@ -428,32 +414,34 @@ function loop(ts){
         octx.fillStyle = 'white'; octx.font = '14px Arial'; octx.fillText('M'+(i+1), markers[i].x+12, markers[i].y+6);
       }
     }
+
     if (thirdMarker){
       octx.fillStyle = 'orange'; octx.beginPath(); octx.arc(thirdMarker.x, thirdMarker.y, 9, 0, Math.PI*2); octx.fill();
       octx.fillStyle = 'white'; octx.fillText('M3', thirdMarker.x+10, thirdMarker.y+6);
     }
 
-    // baseline display
+    // baseline midpoint (lime)
     if (baselineMid){
       octx.fillStyle = 'lime'; octx.beginPath(); octx.arc(baselineMid.x, baselineMid.y, 8, 0, Math.PI*2); octx.fill();
     }
 
-    // tracked point
+    // tracked point (green) - always shown if available
     if (lastTracked){
-      octx.fillStyle = 'cyan'; octx.beginPath(); octx.arc(lastTracked.x, lastTracked.y, 9, 0, Math.PI*2); octx.fill();
+      octx.fillStyle = 'limegreen'; octx.beginPath(); octx.arc(lastTracked.x, lastTracked.y, 9, 0, Math.PI*2); octx.fill();
       octx.fillStyle = 'black'; octx.font = '12px Arial'; octx.fillText('T', lastTracked.x+10, lastTracked.y+4);
     }
 
-    // run processing at ~25 Hz
+    // run processing at approx 25Hz
     if (ts - lastProcess > 40){
       lastProcess = ts;
-      // only process when tracking is initialized
       if (trackingInited) processFrame();
-      // if markers are present and excessive time since lastGoodTimestamp, attempt re-detect
+      // auto-redetect if no good detection for >2s
       if (performance.now() - lastGoodTimestamp > 2000) attemptAutoRedetect();
-      // update plot and metrics every 200 ms
-      if (ts - lastLoop > 200){
-        drawSpaghetti(); updateMetrics();
+
+      // draw spaghetti and update metrics LIVE only while measuring
+      if (measuring && ts - lastLoop > 150){
+        drawSpaghetti();
+        updateMetrics();
         lastLoop = ts;
       }
     }
@@ -461,7 +449,7 @@ function loop(ts){
   requestAnimationFrame(loop);
 }
 
-// Spaghetti plot with axes and start/end markers
+// live spaghetti plot (draw current data) — called while measuring
 function drawSpaghetti(){
   pctx.clearRect(0,0,plotCanvas.width,plotCanvas.height);
   if (!data.length) return;
@@ -471,7 +459,7 @@ function drawSpaghetti(){
   if (maxX - minX < 0.01){ maxX += 0.5; minX -= 0.5; }
   if (maxY - minY < 0.01){ maxY += 0.5; minY -= 0.5; }
   const rangeX = maxX - minX, rangeY = maxY - minY;
-  // background grid
+  // bg + grid
   pctx.fillStyle = '#ffffff'; pctx.fillRect(0,0,plotCanvas.width,plotCanvas.height);
   pctx.strokeStyle = '#eef2f7';
   for (let gx=0; gx<=10; gx++){ pctx.beginPath(); pctx.moveTo(gx*(plotCanvas.width/10),0); pctx.lineTo(gx*(plotCanvas.width/10),plotCanvas.height); pctx.stroke(); }
@@ -492,19 +480,20 @@ function drawSpaghetti(){
   const ex = ((end.x - minX)/rangeX) * plotCanvas.width, ey = plotCanvas.height - ((end.y - minY)/rangeY) * plotCanvas.height;
   pctx.fillStyle = 'green'; pctx.beginPath(); pctx.arc(sx,sy,6,0,Math.PI*2); pctx.fill(); pctx.fillStyle='black'; pctx.fillText('Start', sx+8, sy+4);
   pctx.fillStyle = 'blue'; pctx.beginPath(); pctx.arc(ex,ey,6,0,Math.PI*2); pctx.fill(); pctx.fillStyle='white'; pctx.fillText('End', ex+8, ey+4);
-  // ticks
+  // ticks and min/max labels
   pctx.fillStyle='#042028'; pctx.font='11px Arial';
   pctx.fillText(minX.toFixed(2), 4, plotCanvas.height-4); pctx.fillText(maxX.toFixed(2), plotCanvas.width-48, plotCanvas.height-4);
   pctx.fillText(minY.toFixed(2), 4, 14); pctx.fillText(maxY.toFixed(2), 4, plotCanvas.height-20);
 }
 
+// update metrics: only meaningful during/after measuring (but updateMetrics can be called at end)
 function updateMetrics(){
   if (!data.length){ totalSwayEl.innerText='0.000'; swayAreaEl.innerText='0.000'; mlDistEl.innerText='0.000'; apDistEl.innerText='0.000'; return; }
   const xs = data.map(d=>d.Xcm), ys = data.map(d=>d.Ycm);
-  let path=0; for (let i=0;i<data.length-1;i++){ path += Math.hypot(data[i+1].Xcm - data[i].Xcm, data[i+1].Ycm - data[i].Ycm); }
+  let path = 0;
+  for (let i=0;i<data.length-1;i++){ path += Math.hypot(data[i+1].Xcm - data[i].Xcm, data[i+1].Ycm - data[i].Ycm); }
   const mlDist = Math.max(...xs) - Math.min(...xs);
   const apDist = Math.max(...ys) - Math.min(...ys);
-  // area via convex hull
   const pts = xs.map((v,i)=>[xs[i], ys[i]]);
   const hull = convexHull(pts);
   const area = polygonArea(hull);
@@ -514,29 +503,31 @@ function updateMetrics(){
   apDistEl.innerText = apDist.toFixed(3);
 }
 
-// convex hull & area
+// convex hull and polygon area helpers
 function convexHull(points){
   if (points.length <= 3) return points;
   points = points.map(p=>[p[0],p[1]]).sort((a,b)=>a[0]===b[0]?a[1]-b[1]:a[0]-b[0]);
   const cross=(o,a,b)=> (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
   const lower=[]; for (let p of points){ while(lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); }
-  const upper=[]; for (let i=points.length-1;i>=0;i--){ const p = points[i]; while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
+  const upper=[]; for (let i=points.length-1;i>=0;i--){ const p=points[i]; while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
   upper.pop(); lower.pop(); return lower.concat(upper);
 }
 function polygonArea(poly){ if (!poly || poly.length<3) return 0; let a=0; for (let i=0;i<poly.length;i++){ const j=(i+1)%poly.length; a += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1]; } return Math.abs(a)/2.0; }
 
-// recording with automatic stop at duration
+// recording controls: test runs 30s by default; samples recorded only when measuring===true
 let testTimer = null;
 startRecBtn.onclick = ()=>{
   if (!baselineMid && !pixelsPerCm){ alert('Set midpoint and calibrate markers first'); return; }
   data = []; measuring = true;
+  lastLoop = 0; // force immediate plot update
   let remaining = 30; timerEl.innerText = 'Timer: ' + remaining + 's';
   testTimer = setInterval(()=>{ remaining -= 1; timerEl.innerText = 'Timer: ' + remaining + 's'; if (remaining<=0){ clearInterval(testTimer); stopRec(); } }, 1000);
 };
 stopRecBtn.onclick = ()=>{ if (testTimer) clearInterval(testTimer); stopRec(); };
-function stopRec(){ measuring=false; timerEl.innerText = 'Timer: --'; drawSpaghetti(); updateMetrics(); alert('Test finished'); }
+function stopRec(){ measuring = false; timerEl.innerText = 'Timer: --'; // final draw & metrics
+  drawSpaghetti(); updateMetrics(); alert('Test finished'); }
 
-// export CSV
+// export CSV (records only saved samples captured while measuring was true)
 exportCSVBtn.onclick = ()=>{
   if (!data.length){ alert('No data to export'); return; }
   let header = 'meta: px_per_cm=' + (pixelsPerCm?pixelsPerCm.toFixed(3):'NA') + '\\n';
@@ -549,10 +540,9 @@ exportCSVBtn.onclick = ()=>{
 // export plot image
 exportPlotBtn.onclick = ()=>{ drawSpaghetti(); const link = document.createElement('a'); link.href = plotCanvas.toDataURL('image/png'); link.download = 'sway_plot.png'; link.click(); };
 
-// periodic auto-redetect to keep markers updated when phone shaken
+// periodic auto redetect if lost
 setInterval(()=>{ if (videoReady && (markers.length<2 || performance.now()-lastGoodTimestamp>3000)) attemptAutoRedetect(); }, 2000);
 
-// video loaded
 video.addEventListener('loadedmetadata', ()=>{ ensureSize(); videoReady = true; requestAnimationFrame(loop); });
 
 // initial UI values
