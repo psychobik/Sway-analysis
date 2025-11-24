@@ -2,28 +2,31 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>SwayMed — Fixed Camera Launch & UI (v2)</title>
+  <title>SwayMed — Final v4 (720p min + Live Plot)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <style>
     :root{--accent:#0b63d8;--muted:#666}
-    body{font-family:Inter,Segoe UI,Roboto,Arial;margin:0;padding:16px;background:#f7f9fc;color:#0b1220}
-    header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:white;border-radius:8px;box-shadow:0 2px 6px rgba(10,20,40,0.06)}
-    main{max-width:900px;margin:14px auto;display:grid;grid-template-columns:1fr 320px;gap:16px}
+    body{font-family:Inter,Segoe UI,Roboto,Arial;margin:0;padding:12px;background:#f7f9fc;color:#0b1220}
+    header{display:flex;align-items:center;justify-content:space-between;padding:12px;background:white;border-radius:8px;box-shadow:0 2px 6px rgba(10,20,40,0.06)}
+    main{max-width:1000px;margin:12px auto;display:grid;grid-template-columns:1fr 340px;gap:14px}
     .card{background:white;padding:12px;border-radius:10px;box-shadow:0 1px 3px rgba(10,20,40,0.04)}
     #videoArea{position:relative;border-radius:8px;overflow:hidden;background:#000;height:420px}
-    video, canvas{width:100%;height:100%;display:block;object-fit:cover}
+    video{width:100%;height:100%;display:block;object-fit:cover;transform:none}
     #overlay{position:absolute;left:0;top:0;pointer-events:auto}
     .controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
     button{padding:10px 12px;border-radius:8px;border:1px solid #dfe7f5;background:white;cursor:pointer}
     button.primary{background:var(--accent);color:white;border:0}
     #status{margin-top:8px;color:var(--muted)}
+    #plot{width:100%;height:140px;border-radius:6px;background:#fff;display:block}
+    .feedback{font-weight:700;font-size:1.05rem;margin-top:8px}
     footer{margin-top:12px;font-size:13px;color:var(--muted);text-align:center}
+    .small{font-size:13px;color:var(--muted)}
   </style>
 </head>
 <body>
   <header class="card">
-    <div><strong>SwayMed</strong> <span style="color:var(--muted);margin-left:8px">— v2 small-sticker detection</span></div>
-    <div style="text-align:right"><div style="font-weight:600">System</div><div style="font-size:12px;color:var(--muted)">Local processing</div></div>
+    <div><strong>SwayMed</strong> <span class="small" style="margin-left:8px">— v4 720p min + live analysis</span></div>
+    <div style="text-align:right"><div style="font-weight:600">System</div><div class="small">Local processing — real-time feedback</div></div>
   </header>
 
   <main>
@@ -34,20 +37,27 @@
         <canvas id="overlay"></canvas>
       </div>
 
-      <div class="controls" style="margin-top:10px">
-        <button id="startCam" class="primary">Start Camera</button>
+      <div class="controls" style="margin-top:8px">
+        <button id="startCam" class="primary">Start Camera (720p min)</button>
         <button id="stopCam">Stop Camera</button>
-        <button id="detectMarkers">Auto-Calibrate (detect small stickers)</button>
+        <button id="detectMarkers">Auto-Calibrate</button>
         <button id="selectTrack">Select Track</button>
-        <button id="autoSelect">Auto Select Track (closest to center on line)</button>
+        <button id="autoSelect">Auto Select Track</button>
         <button id="startRec" class="primary">Start Assessment</button>
         <button id="stopRec">Stop</button>
         <button id="exportCSV">Export CSV</button>
+        <button id="flipToggle">Flip: OFF</button>
       </div>
 
       <div id="status" class="card" style="margin-top:12px">
         <strong>Status</strong>
         <div id="statText">idle</div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <h4>Live Sway Visualization</h4>
+        <canvas id="plot"></canvas>
+        <div class="feedback" id="feedback">No data</div>
       </div>
 
     </section>
@@ -68,49 +78,102 @@
 
 <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoaded()"></script>
 <script>
-/* v2 changes:
- - Marker detection tuned to prefer small blobs (sticker-sized).
- - Auto-select projects camera center onto line between stickers and clamps to segment.
- - If projection outside segment, selects nearest sticker.
- - Keeps UI/UX behavior; all buttons wired.
+/* v4:
+ - Request min resolution 1280x720 via constraints (best-effort).
+ - Live real-time sway plot on same page and instant feedback (RMS, Peak) during recording.
+ - Flip toggle preserved.
 */
 
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
 const octx = overlay.getContext('2d');
-const statusEl = document.getElementById('statText');
+const statText = document.getElementById('statText');
+const plot = document.getElementById('plot');
+const pctx = plot.getContext('2d');
+const feedback = document.getElementById('feedback');
 const metricsEl = document.getElementById('metrics');
+const flipBtn = document.getElementById('flipToggle');
 
 let stream = null;
 let videoReady = false;
+let flipHorizontal = false;
+
 let markers = [], pixelsPerCm = null, trackingPoint = null;
 let prevGray = null, prevPts = null, template = null;
 let trackingInited = false, measuring = false;
 let data = [], baseline = null, lastFiltered = null;
-let raf = null;
-let procReady = false;
 
-function setStatus(s){ statusEl.innerText = s; }
+let raf = null;
+let lastProcess = 0;
+const PROCESS_INTERVAL = 50; // 20 fps
+const PLOT_WINDOW = 200; // samples to show on plot
+
+function setStatus(s){ statText.innerText = s; }
+
+function drawPlot(){
+  // clear
+  pctx.clearRect(0,0,plot.width,plot.height);
+  pctx.strokeStyle = '#1a73e8';
+  pctx.lineWidth = 2;
+  const L = Math.min(data.length, PLOT_WINDOW);
+  if (L < 2) return;
+  const arr = data.slice(-L).map(d => d.sway_filtered !== undefined ? d.sway_filtered : d.sway);
+  const maxV = Math.max(...arr) || 1;
+  pctx.beginPath();
+  for (let i=0;i<L;i++){
+    const x = (i / (PLOT_WINDOW-1)) * plot.width;
+    const y = plot.height - (arr[i]/maxV) * plot.height;
+    if (i===0) pctx.moveTo(x,y); else pctx.lineTo(x,y);
+  }
+  pctx.stroke();
+}
+
+function updateFeedback(){
+  if (!data.length){ feedback.innerText = 'No data'; return; }
+  const arr = data.map(d => d.sway_filtered !== undefined ? d.sway_filtered : d.sway);
+  const rms = Math.sqrt(arr.reduce((s,v)=>s+v*v,0)/arr.length);
+  const peak = Math.max(...arr);
+  feedback.innerText = `RMS: ${rms.toFixed(3)} cm · Peak: ${peak.toFixed(3)} cm`;
+  metricsEl.innerText = `Samples: ${data.length}\nDuration: ${(data[data.length-1].t - data[0].t).toFixed(2)} s\nRMS: ${rms.toFixed(3)} cm\nPeak: ${peak.toFixed(3)} cm`;
+}
 
 async function startCamera(){
   try{
-    setStatus('Requesting camera');
-    const constraints = { video: { facingMode: { ideal: 'environment' }, frameRate: { ideal: 30 } }, audio: false };
+    setStatus('Requesting camera (720p min)');
+    const constraints = {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { min: 1280, ideal: 1920 },
+        height: { min: 720, ideal: 1080 },
+        frameRate: { ideal: 30 }
+      },
+      audio: false
+    };
     stream = await navigator.mediaDevices.getUserMedia(constraints);
     video.srcObject = stream;
     video.setAttribute('playsinline', '');
     await video.play();
-    await new Promise((res)=>{
+    await new Promise(res=>{
       if (video.videoWidth && video.videoHeight) return res();
       const onmd = ()=>{ video.removeEventListener('loadedmetadata', onmd); res(); };
       video.addEventListener('loadedmetadata', onmd);
-      setTimeout(res, 2000);
+      setTimeout(res,2000);
     });
-    overlay.width = video.videoWidth || video.clientWidth || 640;
-    overlay.height = video.videoHeight || video.clientHeight || 480;
-    document.getElementById('videoArea').style.height = Math.min(window.innerHeight * 0.6, 720) + 'px';
+    // set overlay to intrinsic video resolution
+    overlay.width = video.videoWidth || 1280;
+    overlay.height = video.videoHeight || 720;
+    // set visible plot size
+    plot.width = document.querySelector('#left .card') ? document.querySelector('#left .card').clientWidth : 400;
+    plot.height = 140;
     videoReady = true;
-    setStatus('Camera started (' + overlay.width + 'x' + overlay.height + ')');
+    setStatus('Camera started: ' + overlay.width + 'x' + overlay.height);
+    // set flip heuristic
+    try{
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings ? track.getSettings() : {};
+      flipHorizontal = settings.facingMode === 'user';
+      flipBtn.innerText = 'Flip: ' + (flipHorizontal ? 'ON' : 'OFF');
+    }catch(e){}
     startLoop();
   }catch(err){
     console.error('startCamera error', err);
@@ -122,25 +185,28 @@ async function startCamera(){
 function stopCamera(){
   if (stream){
     stream.getTracks().forEach(t=>t.stop());
-    stream = null;
-    video.pause();
-    video.srcObject = null;
-    videoReady = false;
-    setStatus('camera stopped');
+    stream = null; video.pause(); video.srcObject = null; videoReady = false; setStatus('camera stopped');
     if (raf) cancelAnimationFrame(raf);
   }
 }
 
-let lastProcess = 0;
-const PROCESS_INTERVAL = 50;
+flipBtn.addEventListener('click', ()=>{ flipHorizontal = !flipHorizontal; flipBtn.innerText = 'Flip: ' + (flipHorizontal ? 'ON' : 'OFF'); });
 
 function startLoop(){
   function loop(ts){
     try{
       if (videoReady){
-        octx.clearRect(0,0,overlay.width,overlay.height);
-        octx.drawImage(video, 0, 0, overlay.width, overlay.height);
-        // draw markers & labels (small markers only)
+        // draw with flip mapping
+        octx.save();
+        if (flipHorizontal){
+          octx.translate(overlay.width,0); octx.scale(-1,1);
+          octx.drawImage(video,0,0,overlay.width,overlay.height);
+        } else {
+          octx.setTransform(1,0,0,1,0,0);
+          octx.drawImage(video,0,0,overlay.width,overlay.height);
+        }
+        octx.restore();
+        // draw markers/tracking point
         markers.forEach((m,i)=>{
           octx.beginPath(); octx.fillStyle='red'; octx.arc(m.x,m.y,6,0,2*Math.PI); octx.fill();
           octx.fillStyle='white'; octx.fillText(i+1,m.x+8,m.y+4);
@@ -151,29 +217,31 @@ function startLoop(){
         if (ts - lastProcess > PROCESS_INTERVAL){
           lastProcess = ts;
           if (trackingInited) processFrame();
+          if (measuring){
+            drawPlot(); updateFeedback();
+          }
         }
       }
-    }catch(e){ console.error('loop error', e); }
+    }catch(e){ console.error('loop', e); }
     raf = requestAnimationFrame(loop);
   }
   raf = requestAnimationFrame(loop);
 }
 
-/* Improved small-sticker detection logic */
+/* detectMarkers tuned for small stickers (same logic as v2 but mapping accounts for flip) */
 async function detectMarkers(){
   if (!videoReady){ alert('Start camera first'); return; }
   setStatus('Detecting small stickers — hold still');
   try{
-    const pw = 420;
+    const pw = 480;
     const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
     let bitmap;
     try{ bitmap = await createImageBitmap(video); } catch(e){
-      const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-      tmp.getContext('2d').drawImage(video, 0, 0, pw, ph);
-      bitmap = await createImageBitmap(tmp);
+      const tmp = document.createElement('canvas'); tmp.width=pw; tmp.height=ph; tmp.getContext('2d').drawImage(video,0,0,pw,ph); bitmap = await createImageBitmap(tmp);
     }
-    const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-    const tctx = tmp.getContext('2d'); tctx.drawImage(bitmap, 0, 0, pw, ph);
+    const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph; const tctx = tmp.getContext('2d');
+    // if flipped, draw flipped into temp so detection aligns with overlay coordinates
+    if (flipHorizontal){ tctx.save(); tctx.translate(pw,0); tctx.scale(-1,1); tctx.drawImage(bitmap,0,0,pw,ph); tctx.restore(); } else { tctx.drawImage(bitmap,0,0,pw,ph); }
     bitmap.close();
     const img = tctx.getImageData(0,0,pw,ph);
     const dataArr = img.data;
@@ -182,15 +250,11 @@ async function detectMarkers(){
       const r=dataArr[i], g=dataArr[i+1], b=dataArr[i+2];
       const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
       const sat = mx===0 ? 0 : (mx-mn)/mx;
-      // stronger thresholds to focus on small colored stickers: high saturation and reasonably bright
       mask[j] = (sat > 0.4 && mx > 100) ? 1 : 0;
     }
-    // connected components via flood fill; only accept blobs in small size range
     const visited = new Uint8Array(pw*ph);
-    const blobs = [];
-    const stack = [];
-    const MIN_BLOB = 25;   // lower bound for sticker pixels at proc resolution
-    const MAX_BLOB = 2500; // upper bound to avoid large colored regions
+    const blobs = []; const stack = [];
+    const MIN_BLOB = 20; const MAX_BLOB = 3000;
     for (let y=0;y<ph;y++){
       for (let x=0;x<pw;x++){
         const idx = y*pw + x;
@@ -198,175 +262,73 @@ async function detectMarkers(){
           let sumx=0,sumy=0,count=0;
           stack.push(idx); visited[idx]=1;
           while(stack.length){
-            const cur = stack.pop();
-            const cx = cur % pw, cy = Math.floor(cur / pw);
+            const cur = stack.pop(); const cx = cur % pw, cy = Math.floor(cur / pw);
             count++; sumx += cx; sumy += cy;
-            const nlist = [cur-1, cur+1, cur-pw, cur+pw];
-            for (const n of nlist){
-              if (n>=0 && n<pw*ph && mask[n] && !visited[n]){ visited[n]=1; stack.push(n); }
-            }
+            const nlist=[cur-1,cur+1,cur-pw,cur+pw];
+            for (const n of nlist) if (n>=0 && n<pw*ph && mask[n] && !visited[n]){ visited[n]=1; stack.push(n); }
           }
-          if (count >= MIN_BLOB && count <= MAX_BLOB){
-            blobs.push({count, cx: sumx/count, cy: sumy/count});
-          }
+          if (count >= MIN_BLOB && count <= MAX_BLOB) blobs.push({count, cx: sumx/count, cy: sumy/count});
         }
       }
     }
-    if (blobs.length < 2){
-      setStatus('Markers not found. Try smaller stickers, brighter light, or move camera closer.');
-      alert('Found ' + blobs.length + ' small color blob(s). Ensure two small colored stickers are visible.');
-      markers = [];
-      return;
-    }
-    // prefer blobs near camera center (so we avoid large background colored areas even if within size)
+    if (blobs.length < 2){ setStatus('Markers not found'); alert('Found ' + blobs.length + ' small color blob(s).'); markers=[]; return; }
     const centerX = pw/2, centerY = ph/2;
-    blobs.sort((a,b)=>{
-      const da = Math.hypot(a.cx-centerX, a.cy-centerY);
-      const db = Math.hypot(b.cx-centerX, b.cy-centerY);
-      return da - db;
-    });
-    // take two nearest-to-center blobs
+    blobs.sort((a,b)=>Math.hypot(a.cx-centerX,a.cy-centerY) - Math.hypot(b.cx-centerX,b.cy-centerY));
     const b1 = blobs[0], b2 = blobs[1];
     const scaleX = overlay.width / pw, scaleY = overlay.height / ph;
-    markers = [{x: b1.cx * scaleX, y: b1.cy * scaleY, area: b1.count}, {x: b2.cx * scaleX, y: b2.cy * scaleY, area: b2.count}];
+    const mapX = x => flipHorizontal ? overlay.width - x*scaleX : x*scaleX;
+    markers = [{x: mapX(b1.cx), y: b1.cy * scaleY, area: b1.count}, {x: mapX(b2.cx), y: b2.cy * scaleY, area: b2.count}];
     const dx = markers[0].x - markers[1].x, dy = markers[0].y - markers[1].y;
-    const px = Math.hypot(dx, dy);
-    pixelsPerCm = px / 30.0;
+    const px = Math.hypot(dx, dy); pixelsPerCm = px / 30.0;
     setStatus('Markers detected. px/cm=' + pixelsPerCm.toFixed(3));
     alert('Calibration complete: ' + px.toFixed(1) + ' px = 30 cm');
-  }catch(err){
-    console.error('detectMarkers error', err);
-    setStatus('marker detect failed');
-    alert('Marker detection error: ' + (err.message || err));
-  }
+  }catch(err){ console.error('detectMarkers', err); setStatus('marker detect failed'); alert('Marker detection error: ' + (err.message||err)); }
 }
 
-/* Auto-select: project camera center onto line between markers, clamp to segment */
+/* autoSelect unchanged (uses overlay coords) */
 function autoSelectTrack(){
   if (markers.length < 2){ alert('Detect markers first'); return; }
   const A = markers[0], B = markers[1];
-  const cx = overlay.width / 2, cy = overlay.height / 2; // camera center in overlay coords
+  const cx = overlay.width/2, cy = overlay.height/2;
   const ABx = B.x - A.x, ABy = B.y - A.y;
   const ACx = cx - A.x, ACy = cy - A.y;
   const denom = ABx*ABx + ABy*ABy;
-  let t = 0;
-  if (denom > 0) t = (ACx*ABx + ACy*ABy) / denom;
-  // clamp to [0,1] to stay on segment; this yields the point on segment closest to camera center
+  let t = denom>0 ? (ACx*ABx + ACy*ABy) / denom : 0;
   t = Math.max(0, Math.min(1, t));
-  const px = A.x + t*ABx;
-  const py = A.y + t*ABy;
-  trackingPoint = {x: px, y: py};
-  // If projection is exactly at endpoints, ensure it's the sticker itself (starts from sticker)
-  if (t <= 0.001) { trackingPoint = {x: A.x, y: A.y}; }
-  if (t >= 0.999) { trackingPoint = {x: B.x, y: B.y}; }
-  initTracking(trackingPoint);
-  setStatus('Tracking point auto-selected (on line, closest to center)');
+  let px = A.x + t*ABx, py = A.y + t*ABy;
+  if (t <= 0.001) { px = A.x; py = A.y; }
+  if (t >= 0.999) { px = B.x; py = B.y; }
+  trackingPoint = {x: px, y: py}; initTracking(trackingPoint); setStatus('Tracking point auto-selected');
 }
 
-/* Manual select */
-function enableManualSelect(){
-  if (!videoReady){ alert('Start camera first'); return; }
-  setStatus('Tap the video to select a point to track');
-  const handler = (ev)=>{
-    const r = overlay.getBoundingClientRect();
-    const x = (ev.clientX - r.left) * (overlay.width / r.width);
-    const y = (ev.clientY - r.top) * (overlay.height / r.height);
-    trackingPoint = {x,y};
-    initTracking(trackingPoint);
-    overlay.removeEventListener('click', handler);
-    setStatus('Tracking point set');
-  };
-  overlay.addEventListener('click', handler);
-}
+/* manual select */
+function enableManualSelect(){ if(!videoReady){ alert('Start camera first'); return; } setStatus('Tap video to select'); const handler=(ev)=>{ const r=overlay.getBoundingClientRect(); const x=(ev.clientX-r.left)*(overlay.width/r.width); const y=(ev.clientY-r.top)*(overlay.height/r.height); trackingPoint={x,y}; initTracking(trackingPoint); overlay.removeEventListener('click',handler); setStatus('Tracking point set'); }; overlay.addEventListener('click', handler); }
 
-/* init tracking uses OpenCV to capture template */
+/* initTracking accounts for flip when building template */
 function initTracking(pt){
   if (typeof cv === 'undefined'){ alert('OpenCV not loaded; tracking requires OpenCV'); return; }
-  const pw = 320;
-  const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
-  const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-  const tctx = tmp.getContext('2d'); tctx.drawImage(video, 0, 0, pw, ph);
+  const pw = 320; const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
+  const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph; const tctx = tmp.getContext('2d');
+  if (flipHorizontal){ tctx.save(); tctx.translate(pw,0); tctx.scale(-1,1); tctx.drawImage(video,0,0,pw,ph); tctx.restore(); } else { tctx.drawImage(video,0,0,pw,ph); }
   const imgd = tctx.getImageData(0,0,pw,ph);
-  if (prevGray){ try{ prevGray.delete(); }catch(e){} prevGray = null; }
-  prevGray = cv.matFromImageData(imgd);
-  cv.cvtColor(prevGray, prevGray, cv.COLOR_RGBA2GRAY);
-  if (prevPts){ try{ prevPts.delete(); }catch(e){} prevPts = null; }
-  prevPts = new cv.Mat(1,1,cv.CV_32FC2);
-  prevPts.data32F[0] = pt.x; prevPts.data32F[1] = pt.y;
+  if (prevGray){ try{ prevGray.delete(); }catch(e){} prevGray=null; }
+  prevGray = cv.matFromImageData(imgd); cv.cvtColor(prevGray, prevGray, cv.COLOR_RGBA2GRAY);
+  if (prevPts){ try{ prevPts.delete(); }catch(e){} prevPts=null; }
+  prevPts = new cv.Mat(1,1,cv.CV_32FC2); prevPts.data32F[0] = pt.x; prevPts.data32F[1] = pt.y;
   const px = Math.round(pt.x * (pw / overlay.width)), py = Math.round(pt.y * (ph / overlay.height));
-  const tsize = 41;
-  const rx = Math.max(0, px - Math.floor(tsize/2)), ry = Math.max(0, py - Math.floor(tsize/2));
+  const tsize = 41; const rx = Math.max(0, px - Math.floor(tsize/2)), ry = Math.max(0, py - Math.floor(tsize/2));
   const rw = Math.min(tsize, pw - rx), rh = Math.min(tsize, ph - ry);
-  if (template){ try{ template.delete(); }catch(e){} template = null; }
-  if (rw > 4 && rh > 4){
-    const src = cv.matFromImageData(imgd);
-    let grayFull = new cv.Mat(); cv.cvtColor(src, grayFull, cv.COLOR_RGBA2GRAY);
-    template = grayFull.roi(new cv.Rect(rx, ry, rw, rh)).clone();
-    grayFull.delete(); src.delete();
-  }
-  trackingInited = true; data = []; baseline = null; lastFiltered = null;
-  setStatus('Tracking initialized');
+  if (template){ try{ template.delete(); }catch(e){} template=null; }
+  if (rw > 4 && rh > 4){ const src = cv.matFromImageData(imgd); let grayFull = new cv.Mat(); cv.cvtColor(src, grayFull, cv.COLOR_RGBA2GRAY); template = grayFull.roi(new cv.Rect(rx, ry, rw, rh)).clone(); grayFull.delete(); src.delete(); }
+  trackingInited = true; data = []; baseline = null; lastFiltered = null; setStatus('Tracking initialized');
 }
 
-/* process frame similar to previous but unchanged */
-function processFrame(){
-  if (!trackingInited) return;
-  try{
-    const pw = 320;
-    const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75)));
-    createImageBitmap(video).then(bitmap=>{
-      const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph;
-      const tctx = tmp.getContext('2d'); tctx.drawImage(bitmap, 0, 0, pw, ph); bitmap.close();
-      const imgd = tctx.getImageData(0,0,pw,ph);
-      let gray = cv.matFromImageData(imgd);
-      cv.cvtColor(gray, gray, cv.COLOR_RGBA2GRAY);
-      let next = new cv.Mat(), status = new cv.Mat(), err = new cv.Mat();
-      try{ cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3, new cv.TermCriteria(cv.TermCriteria_EPS|cv.TermCriteria_COUNT, 20, 0.03)); }catch(e){}
-      let usedX = null, usedY = null;
-      if (status && status.data[0] === 1){
-        usedX = next.data32F[0]; usedY = next.data32F[1];
-      } else if (template){
-        let src = cv.matFromImageData(imgd);
-        let grayFull = new cv.Mat(); cv.cvtColor(src, grayFull, cv.COLOR_RGBA2GRAY);
-        let res = new cv.Mat(); cv.matchTemplate(grayFull, template, res, cv.TM_CCOEFF_NORMED);
-        let mm = cv.minMaxLoc(res);
-        usedX = mm.maxLoc.x * (overlay.width / pw) + template.cols/2 * (overlay.width / pw);
-        usedY = mm.maxLoc.y * (overlay.height / ph) + template.rows/2 * (overlay.height / ph);
-        res.delete(); grayFull.delete(); src.delete();
-      }
-      if (usedX !== null){
-        const t = performance.now()/1000.0;
-        const X_cm = usedX / pixelsPerCm; const Y_cm = usedY / pixelsPerCm;
-        if (!baseline) baseline = {X_cm, Y_cm, t};
-        const dx = X_cm - baseline.X_cm, dy = Y_cm - baseline.Y_cm;
-        let sway = Math.hypot(dx, dy);
-        const medianN = 5, alpha = 0.25;
-        data.push({t, x_px: usedX, y_px: usedY, X_cm, Y_cm, sway});
-        const slice = data.slice(Math.max(0, data.length - medianN)).map(d=>d.sway).sort((a,b)=>a-b);
-        const med = slice[Math.floor(slice.length/2)];
-        const filtered = lastFiltered === null ? med : (alpha * med + (1-alpha) * lastFiltered);
-        lastFiltered = filtered;
-        data[data.length-1].sway_filtered = filtered;
-      }
-      if (prevGray){ try{ prevGray.delete(); }catch(e){} }
-      prevGray = gray;
-      if (prevPts){ try{ prevPts.delete(); }catch(e){} }
-      prevPts = next;
-      if (status) try{ status.delete(); }catch(e){}; if (err) try{ err.delete(); }catch(e){}
-    }).catch(e=>{ console.error('createImageBitmap/process error', e); });
-  }catch(e){ console.error('processFrame outer', e); }
-}
+/* processFrame same as before but accounts for flip when drawing/mapping */
+function processFrame(){ if (!trackingInited) return; try{ const pw = 320; const ph = Math.max(80, Math.round(pw * (video.videoHeight / video.videoWidth || 0.75))); createImageBitmap(video).then(bitmap=>{ const tmp = document.createElement('canvas'); tmp.width = pw; tmp.height = ph; const tctx = tmp.getContext('2d'); if (flipHorizontal){ tctx.save(); tctx.translate(pw,0); tctx.scale(-1,1); tctx.drawImage(bitmap,0,0,pw,ph); tctx.restore(); } else { tctx.drawImage(bitmap,0,0,pw,ph); } bitmap.close(); const imgd = tctx.getImageData(0,0,pw,ph); let gray = cv.matFromImageData(imgd); cv.cvtColor(gray, gray, cv.COLOR_RGBA2GRAY); let next = new cv.Mat(), status = new cv.Mat(), err = new cv.Mat(); try{ cv.calcOpticalFlowPyrLK(prevGray, gray, prevPts, next, status, err, new cv.Size(21,21), 3, new cv.TermCriteria(cv.TermCriteria_EPS|cv.TermCriteria_COUNT, 20, 0.03)); }catch(e){} let usedX=null, usedY=null; if (status && status.data[0]===1){ usedX = next.data32F[0]; usedY = next.data32F[1]; } else if (template){ let src = cv.matFromImageData(imgd); let grayFull = new cv.Mat(); cv.cvtColor(src, grayFull, cv.COLOR_RGBA2GRAY); let res = new cv.Mat(); cv.matchTemplate(grayFull, template, res, cv.TM_CCOEFF_NORMED); let mm = cv.minMaxLoc(res); usedX = mm.maxLoc.x * (overlay.width / pw) + template.cols/2 * (overlay.width / pw); usedY = mm.maxLoc.y * (overlay.height / ph) + template.rows/2 * (overlay.height / ph); res.delete(); grayFull.delete(); src.delete(); } if (usedX !== null){ const t = performance.now()/1000.0; const X_cm = usedX / pixelsPerCm; const Y_cm = usedY / pixelsPerCm; if (!baseline) baseline = {X_cm, Y_cm, t}; const dx = X_cm - baseline.X_cm, dy = Y_cm - baseline.Y_CM; let sway = Math.hypot(dx, dy); const medianN=5, alpha=0.25; data.push({t, x_px: usedX, y_px: usedY, X_cm, Y_cm, sway}); const slice = data.slice(Math.max(0, data.length - medianN)).map(d=>d.sway).sort((a,b)=>a-b); const med = slice[Math.floor(slice.length/2)]; const filtered = lastFiltered===null?med:(alpha*med + (1-alpha)*lastFiltered); lastFiltered = filtered; data[data.length-1].sway_filtered = filtered; } if (prevGray){ try{ prevGray.delete(); }catch(e){} } prevGray = gray; if (prevPts){ try{ prevPts.delete(); }catch(e){} } prevPts = next; if (status) try{ status.delete(); }catch(e){}; if (err) try{ err.delete(); }catch(e){} }).catch(e=>{ console.error('createImageBitmap/process error', e); }); }catch(e){ console.error('processFrame outer', e); } }
 
-/* CSV export */
-function exportCSV(){
-  if (!data.length){ alert('No data recorded'); return; }
-  let csv = "time_s,x_px,y_px,X_cm,Y_cm,sway_cm\n" + data.map(d=> [d.t.toFixed(3), d.x_px.toFixed(2), d.y_px.toFixed(2), d.X_cm.toFixed(3), d.Y_cm.toFixed(3), (d.sway_filtered!==undefined?d.sway_filtered:d.sway).toFixed(3)].join(',')).join('\n');
-  const blob = new Blob([csv], {type: 'text/csv'});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'sway_timeseries.csv'; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 1500);
-}
+function exportCSV(){ if (!data.length){ alert('No data recorded'); return; } let csv = "time_s,x_px,y_px,X_cm,Y_cm,sway_cm\n" + data.map(d=> [d.t.toFixed(3), d.x_px.toFixed(2), d.y_px.toFixed(2), d.X_cm.toFixed(3), d.Y_cm.toFixed(3), (d.sway_filtered!==undefined?d.sway_filtered:d.sway).toFixed(3)].join(',')).join('\n'); const blob = new Blob([csv], {type:'text/csv'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'sway_timeseries.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1500); }
 
-/* UI wiring */
+// wiring
 document.getElementById('startCam').addEventListener('click', startCamera);
 document.getElementById('stopCam').addEventListener('click', stopCamera);
 document.getElementById('detectMarkers').addEventListener('click', detectMarkers);
@@ -376,9 +338,7 @@ document.getElementById('startRec').addEventListener('click', ()=>{ if(!tracking
 document.getElementById('stopRec').addEventListener('click', ()=>{ measuring=false; setStatus('stopped'); exportCSV(); });
 document.getElementById('exportCSV').addEventListener('click', exportCSV);
 
-/* OpenCV loader callback */
-function onOpenCvLoaded(){ console.log('OpenCV loaded'); procReady = true; setStatus('OpenCV loaded'); }
-
+function onOpenCvLoaded(){ console.log('OpenCV loaded'); setStatus('OpenCV loaded'); }
 setTimeout(()=>{ if (typeof cv === 'undefined') setStatus('OpenCV not loaded; tracking disabled until loaded.'); }, 3000);
 
 </script>
